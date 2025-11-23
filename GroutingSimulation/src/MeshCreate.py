@@ -225,7 +225,7 @@ def create_foundation_with_drill_hole():
     gmsh.model.mesh.optimize("Netgen", 0)
     
     # 保存网格文件
-    # gmsh.write("GroutingSimulation/results/MeshCreate/foundation_drilling_model.msh")
+    gmsh.write("GroutingSimulation/results/MeshCreate/foundation_drilling_model.msh")
     
     # 在GUI中显示网格（如果可用）
     if '-nopopup' not in sys.argv:

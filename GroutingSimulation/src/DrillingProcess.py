@@ -282,6 +282,46 @@ for step in range(num_layers + 1):  # 包括初始状态（step=0）
     if comm.rank == 0:
         print(f"最大位移幅值: {stats['max_disp_magnitude']:.6e} m")
         print(f"激活单元数量: {stats['active_cells']} / {stats['total_cells']}")
+# 计算位移变化 - 在所有进程中执行
+u_change = Function(V_u)
+u_change.x.array[:] = u_current.x.array[:] - u_0.x.array[:]
+
+# 使用钻孔区域标记设置位移变化为0
+print(f"[Rank {comm.rank}] Setting drillhole region displacement change to zero using cell markers...")
+
+# 获取钻孔区域的单元（标记为2）
+drillhole_cells = np.where(cell_markers.values == 2)[0]
+print(f"[Rank {comm.rank}] Found {len(drillhole_cells)} drillhole cells")
+
+# 获取几何节点映射
+geometry_dofs = msh.geometry.dofmap
+
+# 收集所有钻孔区域的节点
+drillhole_nodes = set()
+for cell in drillhole_cells:
+    nodes = geometry_dofs[cell]
+    drillhole_nodes.update(nodes)
+
+drillhole_nodes = list(drillhole_nodes)
+print(f"[Rank {comm.rank}] Found {len(drillhole_nodes)} unique nodes in drillhole region")
+
+# 设置这些节点的自由度
+for node in drillhole_nodes:
+    # 对于拉格朗日向量函数空间，自由度按节点顺序排列
+    # 每个节点有3个自由度 (x, y, z方向)
+    dof_x = node * 3
+    dof_y = node * 3 + 1
+    dof_z = node * 3 + 2
+    
+    if dof_x < len(u_change.x.array):
+        u_change.x.array[dof_x] = 0.0
+        u_change.x.array[dof_y] = 0.0
+        u_change.x.array[dof_z] = 0.0
+
+print(f"[Rank {comm.rank}] Set {len(drillhole_nodes)} nodes to zero in drillhole region")
+
+# 更新幽灵节点 - 确保所有进程的数据同步
+u_change.x.scatter_forward()
 
 # 只保存最后一步的位移场
 if comm.rank == 0:
@@ -302,7 +342,7 @@ if comm.rank == 0:
         grid.point_data["Displacement"] = displacement
         grid.point_data["Displacement_X"] = displacement[:, 0]
         grid.point_data["Displacement_Y"] = displacement[:, 1]
-        grid.point_data["Displacement_Z"] = displacement[:, 2]
+        grid.point_data["Displacement_Z1"] = displacement[:, 2]
         
         # 在x=2处创建切片
         slice_1 = grid.slice(normal='x', origin=[2.0, 0, 0])
@@ -312,7 +352,7 @@ if comm.rank == 0:
         plotter.window_size = [1200, 900]
         
         # 添加切片
-        plotter.add_mesh(slice_1, scalars="Displacement_Z", cmap="coolwarm", 
+        plotter.add_mesh(slice_1, scalars="Displacement_Z1", cmap="coolwarm", 
                         show_scalar_bar=True, clim=[np.min(displacement[:, 2]), np.max(displacement[:, 2])])
         
         # 添加标题和坐标轴
@@ -330,26 +370,27 @@ if comm.rank == 0:
         print(f"切片可视化已保存: {output_dir}/initial_displacement_x2.png")
         
         # 创建第二个切片在x=2处
-
-        slice_y = grid.slice(normal='x', origin=[0, 2.0, 0])
+        displacement_change = u_change.x.array.reshape(geometry.shape[0], 3)
+        grid.point_data["Displacement_Z2"] = displacement_change[:, 2]
+        slice_ = grid.slice(normal='x', origin=[2.0, 0, 0])
         
         plotter2 = pyvista.Plotter(off_screen=True)
         plotter2.window_size = [1200, 900]
         
-        plotter2.add_mesh(slice_y, scalars="Displacement_Z", cmap="coolwarm",
-                         show_scalar_bar=True, clim=[np.min(displacement[:, 2]), np.max(displacement[:, 2])])
+        plotter2.add_mesh(slice_, scalars="Displacement_Z2", cmap="coolwarm",
+                         show_scalar_bar=True, clim=[0, np.max(displacement_change[:, 2])])
         
-        plotter2.add_title(f"Final Displacement Field - Slice at y=2.0")
+        plotter2.add_title(f"Displacement change Field - Slice at x=2.0")
         plotter2.add_axes()
         
         # 设置视角 - 从x轴正方向观察
-        plotter2.view_vector((0, 1, 0))
+        plotter2.view_vector((1, 0, 0))
         plotter2.camera.zoom(1.5)
 
-        plotter2.screenshot(f"{output_dir}/displacement_slice_y2.png")
+        plotter2.screenshot(f"{output_dir}/change_displacement_x2.png")
         plotter2.close()
         
-        print(f"切片可视化已保存: {output_dir}/displacement_slice_y2.png")
+        print(f"切片可视化已保存: {output_dir}/change_displacement_x2.png")
         
     except Exception as e:
         print(f"切片可视化失败: {e}")
@@ -385,4 +426,4 @@ if comm.rank == 0:
     print("\n=== 钻孔模拟完成 ===")
     print(f"结果保存在: {output_dir}")
     print(f"位移场文件: final_displacement.xdmf")
-    print(f"切片可视化: displacement_slice_x2.png, displacement_slice_y2.png")
+    print(f"切片可视化: initial_displacement_x2.png, change_displacement_x2.png")
