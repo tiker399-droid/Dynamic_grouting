@@ -16,7 +16,7 @@ print(f"Mesh imported: {msh.topology.index_map(3).size_local} cells")
 print(f"Cell markers: {np.unique(cell_markers.values)}")
 
 # 材料参数
-E = 20e6  # Young's modulus
+E = 2e6  # Young's modulus
 nu = 0.3   # Poisson's ratio
 rhos_sat = 2700  # Soil density
 rho_w = 1000  # Water density
@@ -213,7 +213,7 @@ for step in range(num_layers + 1):  # 包括初始状态（step=0）
     
     # 线性弹性变分形式
     a = ufl.inner(sigma(u), epsilon(v)) * dx_active(1)
-    L = ufl.dot(f, v) * dx_active(1) - p_water * ufl.div(v) * dx_active(1)
+    L = ufl.dot(f, v) * dx_active(1) + p_water * ufl.div(v) * dx_active(1)
     
     # 如果是第一步，使用零初始条件；否则使用前一步的解作为初始猜测
     if step == 0:
