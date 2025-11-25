@@ -46,10 +46,18 @@ def create_foundation_with_drill_hole():
                                            0, 0, -hole_depth - 0.002, 
                                            hole_radius)
     
+    
     # 同步几何模型
     gmsh.model.occ.synchronize()
+    # --- 提取钻孔圆柱的侧壁（在 fragment 前！）---
+    cyl_surfaces = gmsh.model.getBoundary([(3, drill_hole)], oriented=False, recursive=False)
+    cylinder_lateral_surface = None
+    for dim, surf_tag in cyl_surfaces:
+        edges = gmsh.model.getBoundary([(2, surf_tag)], oriented=False, recursive=False)
+        if len(edges) == 2:  # 侧面有两个边界环
+            cylinder_lateral_surface = surf_tag
+            break
     
-    # 方法1：使用Fragment而不是Cut（推荐）
     # Fragment操作会保留所有体积但将它们分割开
     all_volumes, _ = gmsh.model.occ.fragment([(3, foundation)], [(3, drill_hole)])
     
@@ -107,23 +115,24 @@ def create_foundation_with_drill_hole():
     foundation_ymin_surfaces = []
     foundation_ymax_surfaces = []
     foundation_bottom_surfaces = []
-    
+
     # 容差
     tol = 1e-3
     
     for surface in surfaces:
         com = gmsh.model.occ.getCenterOfMass(surface[0], surface[1])
-        
+        '''
         # 检查是否为圆柱体侧面
         # 圆柱体侧面的点在中心轴附近，但z坐标在钻孔深度范围内
-        distance_from_axis = math.sqrt((com[0] - center_x)**2 + (com[1] - center_y)**2)
-        if abs(distance_from_axis - hole_radius) < tol and \
+        
+        if abs(distance_from_axis - hole_radius) < 0.04 and \
            foundation_size - hole_depth - tol <= com[2] <= foundation_size + tol:
             cylinder_wall_surfaces.append(surface[1])
-        
+        '''
+        distance_from_axis = math.sqrt((com[0] - center_x)**2 + (com[1] - center_y)**2)
         # 检查是否为圆柱体底面
         # 圆柱体底面的点在钻孔半径内，且z坐标接近钻孔底部
-        elif distance_from_axis < hole_radius + tol and \
+        if distance_from_axis < hole_radius + tol and \
              abs(com[2] - (foundation_size - hole_depth)) < tol:
             cylinder_bottom_surfaces.append(surface[1])
         
@@ -144,10 +153,17 @@ def create_foundation_with_drill_hole():
             foundation_ymax_surfaces.append(surface[1])
     
     # 创建边界物理组
+    '''
     if cylinder_wall_surfaces:
         gmsh.model.addPhysicalGroup(2, cylinder_wall_surfaces, cylinder_wall_tag)
         gmsh.model.setPhysicalName(2, cylinder_wall_tag, "CylinderWall")
         print(f"Cylinder wall surfaces: {len(cylinder_wall_surfaces)}")
+    '''
+    if cylinder_lateral_surface is not None:
+        gmsh.model.addPhysicalGroup(2, [cylinder_lateral_surface], 101)
+        gmsh.model.setPhysicalName(2, 101, "CylinderWall")
+    else:
+        print("⚠️ Warning: Cylinder wall not tagged.")
     
     if cylinder_bottom_surfaces:
         gmsh.model.addPhysicalGroup(2, cylinder_bottom_surfaces, cylinder_bottom_tag)

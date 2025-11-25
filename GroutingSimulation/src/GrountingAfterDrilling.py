@@ -16,9 +16,10 @@ class GroutingSimulation:
         self.grout_density = grout_density
         self.rho_w = 1000  # 水密度
         self.g = 9.81      # 重力加速度
-        
+        self.p_z = 1e6
+
         # 材料参数（土体）
-        self.E = 20e6      # 杨氏模量
+        self.E = 2e6      # 杨氏模量
         self.nu = 0.3      # 泊松比
         self.k = 1e-12     # 渗透系数 (m/s)
         self.mu = 1e-3     # 水的动力粘度 (Pa·s)
@@ -33,12 +34,12 @@ class GroutingSimulation:
         
         # 初始化位移场
         self.u = Function(self.V_u)
+        self.u_initial = Function(self.V_u)
         if initial_displacement is not None:
             self.u.x.array[:] = initial_displacement.flatten()
+            self.u_initial.x.array[:] = initial_displacement.flatten()
         else:
             self.u.x.array[:] = 0.0  # 如果没有初始位移，设为0
-        self.u_initial = Function(self.V_u)
-        self.u_initial.x.array[:] = self.u.x.array[:]
         self.u_increment = Function(self.V_u)
         # 初始化压力场
         self.p = Function(self.V_p)
@@ -130,7 +131,7 @@ class GroutingSimulation:
             water_hydrostatic_pressure = self.rho_w * self.g * (foundation_size - x[2])
             
             # 钻孔边界施加浆液静止压力分布（浆液密度）
-            grout_hydrostatic_pressure = self.grout_density * self.g * (foundation_size - x[2])
+            grout_hydrostatic_pressure = self.p_z + self.grout_density * self.g * (foundation_size - x[2])
             
             # 创建压力表达式
             water_pressure_expr = fem.Expression(water_hydrostatic_pressure, self.V_p.element.interpolation_points())
@@ -156,7 +157,6 @@ class GroutingSimulation:
             drill_boundaries = [101, 102]  # CylinderWall, CylinderBottom
             
             for marker in drill_boundaries:
-                if marker in unique_markers:
                     facets_drill = self.facet_markers.find(marker)
                     dofs_drill = fem.locate_dofs_topological(self.V_p, fdim, facets_drill)
                     
@@ -270,7 +270,7 @@ class GroutingSimulation:
         # 平衡方程变分形式
         # 总应力 = 有效应力 + 孔隙压力
         a_elastic = fem.form(ufl.inner(sigma(u_trial), epsilon(u_test)) * self.dx_foundation(1))
-        L_elastic = fem.form(ufl.dot(f, u_test) * self.dx_foundation(1) + ufl.inner(self.p * ufl.Identity(self.msh.topology.dim), epsilon(u_test)) * self.dx_foundation(1))
+        L_elastic = fem.form(ufl.dot(f, u_test) * self.dx_foundation(1) + self.p * ufl.div(u_test) * self.dx_foundation(1))
         
         # 组装和求解
         A_elastic = petsc.assemble_matrix(a_elastic, bcs=self.bcs_u)
