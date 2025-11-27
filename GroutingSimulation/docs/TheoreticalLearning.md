@@ -25,7 +25,7 @@
   + $\epsilon_{zx}=\frac{1}{2G}\sigma_{zx}$
   + 其中，$G=\frac{E}{2(1+\nu)}$为剪切模量
 + 引入拉梅常数
-  + 正应变分量改写：$\sigma_{ii}=\frac{1+\nu}{E}\sigma_{ii}-\frac{\nu}{E}(\sigma_{xx}+\sigma_{yy}+\sigma_{zz})$
+  + 正应变分量改写：$\epsilon_{ii}=\frac{1+\nu}{E}\sigma_{ii}-\frac{\nu}{E}(\sigma_{xx}+\sigma_{yy}+\sigma_{zz})$
   + 表达式为：$\epsilon_{ij}=\frac{1+\nu}{E}\sigma_{ij}-\frac{\nu}{E}\sigma_{kk}\delta_{ij}$
     + $\sigma_{kk}=\sigma_{xx}+\sigma_{yy}+\sigma_{zz}$
     + $\delta_{ij}$为克罗内克符号

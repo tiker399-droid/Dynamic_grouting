@@ -29,7 +29,7 @@ def create_foundation_with_drill_hole():
     
     # 设置网格尺寸
     mesh_size_coarse = 0.4  # 粗网格尺寸
-    mesh_size_fine = 0.02   # 钻孔附近细网格尺寸（稍微调小）
+    mesh_size_fine = 0.02   # 钻孔附近细网格尺寸
     
     # 创建地基立方体
     foundation = gmsh.model.occ.addBox(0, 0, 0, 
