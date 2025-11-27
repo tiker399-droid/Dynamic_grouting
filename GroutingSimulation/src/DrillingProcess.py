@@ -391,6 +391,37 @@ if comm.rank == 0:
         plotter2.close()
         
         print(f"切片可视化已保存: {output_dir}/change_displacement_x2.png")
+        # 最后一个切片 - 最终位移场
+        displacement = u_current.x.array.reshape(geometry.shape[0], 3)
+        grid.point_data["Displacement"] = displacement
+        grid.point_data["Displacement_X"] = displacement[:, 0]
+        grid.point_data["Displacement_Y"] = displacement[:, 1]
+        grid.point_data["Displacement_Z1"] = displacement[:, 2]
+        
+        # 在x=2处创建切片
+        slice_2 = grid.slice(normal='x', origin=[2.0, 0, 0])
+        
+        # 创建绘图器
+        plotter3 = pyvista.Plotter(off_screen=True)
+        plotter3.window_size = [1200, 900]
+        
+        # 添加切片
+        plotter3.add_mesh(slice_2, scalars="Displacement_Z1", cmap="coolwarm", 
+                        show_scalar_bar=True, clim=[np.min(displacement[:, 2]), np.max(displacement[:, 2])])
+        
+        # 添加标题和坐标轴
+        plotter3.add_title(f"final Displacement Field - Slice at x=2.0")
+        plotter3.add_axes()
+        
+        # 设置视角 - 从x轴正方向观察
+        plotter3.view_vector((1, 0, 0))
+        plotter3.camera.zoom(1.5)
+
+        # 保存图像
+        plotter3.screenshot(f"{output_dir}/final_displacement_x2.png")
+        plotter3.close()
+        
+        print(f"切片可视化已保存: {output_dir}/final_displacement_x2.png")
         
     except Exception as e:
         print(f"切片可视化失败: {e}")

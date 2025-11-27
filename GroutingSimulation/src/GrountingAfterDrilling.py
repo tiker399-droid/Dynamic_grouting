@@ -7,6 +7,7 @@ from dolfinx.io import gmshio
 import ufl
 import h5py
 import os
+import matplotlib.pyplot as plt
 
 class GroutingSimulation:
     def __init__(self, msh, cell_markers, facet_markers, initial_displacement=None, grout_density=1800):
@@ -153,22 +154,41 @@ class GroutingSimulation:
                     self.bcs_p.append(bc_side)
                     print(f"边界 {marker} 水压力边界: {len(facets_side)} 个面")
             
-            # 钻孔边界（标记101,102）- 施加浆液静止压力
-            drill_boundaries = [101, 102]  # CylinderWall, CylinderBottom
+            # 钻孔边界 - 施加浆液静止压力
             
-            for marker in drill_boundaries:
-                    facets_drill = self.facet_markers.find(marker)
-                    dofs_drill = fem.locate_dofs_topological(self.V_p, fdim, facets_drill)
-                    
-                    # 创建压力函数并插值
+            # 只在地面以下40,80,120,160,200cm处施加压力（即深度3.6, 3.2, 2.8, 2.4, 2.0）
+            drill_depths = [3.6, 3.2, 2.8, 2.4, 2.0]  # 对应的深度
+            tolerance = 0.05  # 容差，单位米
+
+            # 获取标记为101的圆柱面
+            marker = 101
+            if marker in unique_markers:
+                facets_drill = self.facet_markers.find(marker)
+                # 获取这些面的中心坐标
+                facet_geom = self.msh.geometry.x
+                facet_to_vertex = self.msh.topology.connectivity(fdim, 0)
+                drill_facets_selected = []
+                for facet in facets_drill:
+                    vertices = facet_to_vertex.links(facet)
+                    # 计算面的中心
+                    center = np.mean(facet_geom[vertices], axis=0)
+                    z = center[2]
+                    # 检查这个面的中心是否在任何一个指定深度附近
+                    for depth in drill_depths:
+                        if abs(z - depth) < tolerance:
+                            drill_facets_selected.append(facet)
+                            break  # 只要匹配一个深度就跳出内层循环
+
+                drill_facets_selected = np.array(drill_facets_selected, dtype=np.int32)
+                if len(drill_facets_selected) > 0:
+                    dofs_drill = fem.locate_dofs_topological(self.V_p, fdim, drill_facets_selected)
                     p_drill = Function(self.V_p)
                     p_drill.interpolate(grout_pressure_expr)
-                    
                     bc_drill = dirichletbc(p_drill, dofs_drill)
                     self.bcs_p.append(bc_drill)
-                    print(f"钻孔边界 {marker} 压力边界: {len(facets_drill)} 个面")
-            
-            print(f"总共设置了 {len(self.bcs_u)} 个位移边界条件和 {len(self.bcs_p)} 个压力边界条件")
+                    print(f"钻孔边界 {marker} 在深度{drill_depths}处压力边界: {len(drill_facets_selected)} 个面")
+
+            # 注意：我们不再对钻孔底部（标记102）施加压力，因为题目要求的深度都在侧面上。
             
             # 注意：地基底部（标记107）没有设置压力边界条件，这意味着它是自然边界条件（不透水）
             print("地基底部设置为不透水边界（自然边界条件）")
@@ -221,7 +241,7 @@ class GroutingSimulation:
         
         # 重力项 - 注意重力方向向下，与z轴正方向相反
         gravity_vector = ufl.as_vector([0, 0, -1])
-        L_darcy = fem.form(K * self.rho_w * self.g * ufl.dot(gravity_vector, ufl.grad(p_test)) * self.dx_foundation(1))
+        L_darcy = fem.form(K * (self.rho_w + self.grout_density) / 2 * self.g * ufl.dot(gravity_vector, ufl.grad(p_test)) * self.dx_foundation(1))
         
         # 组装和求解
         A_darcy = fem.petsc.assemble_matrix(a_darcy, bcs=self.bcs_p)
@@ -426,7 +446,7 @@ if comm.rank == 0:
         plotter.window_size = [1200, 900]
         
         # 添加切片
-        plotter.add_mesh(slice_x, scalars="Displacement_Z", cmap="coolwarm", 
+        plotter.add_mesh(slice_x, scalars="Displacement_Z", cmap="rainbow", 
                         show_scalar_bar=True, clim=[np.min(displacement[:, 2]), np.max(displacement[:, 2])])
         
         # 添加标题和坐标轴
@@ -449,7 +469,7 @@ if comm.rank == 0:
         plotter2 = pyvista.Plotter(off_screen=True)
         plotter2.window_size = [1200, 900]
         
-        plotter2.add_mesh(slice_y, scalars="Displacement_Z", cmap="coolwarm",
+        plotter2.add_mesh(slice_y, scalars="Displacement_Z", cmap="rainbow",
                          show_scalar_bar=True, clim=[np.min(displacement[:, 2]), np.max(displacement[:, 2])])
         
         plotter2.add_title(f"Final Displacement Field - Slice at y=2.0")
@@ -488,7 +508,7 @@ if comm.rank == 0:
         plotter3.window_size = [1200, 900]
         
         # 添加切片
-        plotter3.add_mesh(slice_x, scalars="Pressure", cmap="coolwarm", 
+        plotter3.add_mesh(slice_x, scalars="Pressure", cmap="rainbow", 
                         show_scalar_bar=True, clim=[np.min(pressure_data), np.max(pressure_data)])
         
         # 添加标题和坐标轴
@@ -506,3 +526,107 @@ if comm.rank == 0:
         print(f"切片可视化已保存: GroutingSimulation/results/grouting_simulation/Pressure.png")
     except Exception as e:
         print(f"可视化创建失败: {e}")
+# 添加可视化代码 - 绘制x=2切片面上的压力变化和位移曲线
+if comm.rank == 0:
+    try:
+        print("\n创建压力变化曲线和位移曲线...")
+        
+        # 创建位移场的PyVista网格
+        topology_u, cell_types_u, geometry_u = plot.vtk_mesh(grouting_sim.V_u)
+        grid_u = pyvista.UnstructuredGrid(topology_u, cell_types_u, geometry_u)
+        
+        # 获取位移数据
+        displacement = grouting_sim.u_increment.x.array.reshape(geometry_u.shape[0], 3)
+        grid_u.point_data["Displacement"] = displacement
+        grid_u.point_data["Displacement_Z"] = displacement[:, 2]
+        
+        # 创建压力场的PyVista网格
+        topology_p, cell_types_p, geometry_p = plot.vtk_mesh(grouting_sim.V_p)
+        grid_p = pyvista.UnstructuredGrid(topology_p, cell_types_p, geometry_p)
+        
+        # 获取压力数据
+        pressure_data = grouting_sim.p.x.array[:]
+        grid_p.point_data["Pressure"] = pressure_data
+        
+        # 在x=2处创建切片
+        slice_x_u = grid_u.slice(normal='x', origin=[2.0, 0, 0])
+        slice_x_p = grid_p.slice(normal='x', origin=[2.0, 0, 0])
+        
+        # 图1: z=2.8高度处的压力变化曲线 (沿着y方向)
+        print("绘制z=2.8高度处的压力变化曲线...")
+        
+        # 从切片中提取z=2.8附近的点
+        tolerance = 0.05  # 容差范围
+        points_z3 = []
+        pressures_z3 = []
+        
+        for i in range(slice_x_p.n_points):
+            point = slice_x_p.points[i]
+            pressure = slice_x_p.point_data["Pressure"][i]
+            # 筛选z坐标在3±tolerance范围内的点
+            if abs(point[2] - 2.8) < tolerance:
+                points_z3.append(point)
+                pressures_z3.append(pressure)
+        
+        # 按y坐标排序
+        sorted_indices = np.argsort([p[1] for p in points_z3])
+        y_coords = np.array([points_z3[i][1] for i in sorted_indices])
+        pressures_sorted = np.array([pressures_z3[i] for i in sorted_indices])
+        
+        # 绘制压力变化曲线
+        plt.figure(figsize=(10, 6))
+        plt.plot(y_coords, pressures_sorted, 'b-', linewidth=2, label='Pressure at z=3')
+        plt.xlabel('Y Coordinate (m)')
+        plt.ylabel('Pressure (Pa)')
+        plt.title('Pressure Variation at z=2.8 (Slice x=2.0)')
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig('GroutingSimulation/results/grouting_simulation/pressure_z3_curve.png', dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"压力变化曲线已保存: GroutingSimulation/results/grouting_simulation/pressure_z3_curve.png")
+        
+        # 图2: z=4高度处的地基隆起位移曲线 (沿着y方向)
+        print("绘制z=4高度处的地基隆起位移曲线...")
+        
+        # 从位移切片中提取z=4附近的点
+        points_z4 = []
+        displacements_z4 = []
+        
+        for i in range(slice_x_u.n_points):
+            point = slice_x_u.points[i]
+            displacement_z = slice_x_u.point_data["Displacement_Z"][i]
+            # 筛选z坐标在4±tolerance范围内的点
+            if abs(point[2] - 4.0) < tolerance:
+                points_z4.append(point)
+                displacements_z4.append(displacement_z)
+        
+        # 按y坐标排序
+        sorted_indices_z4 = np.argsort([p[1] for p in points_z4])
+        y_coords_z4 = np.array([points_z4[i][1] for i in sorted_indices_z4])
+        displacements_sorted = np.array([displacements_z4[i] for i in sorted_indices_z4])
+        
+        # 绘制位移曲线
+        plt.figure(figsize=(10, 6))
+        plt.plot(y_coords_z4, displacements_sorted, 'r-', linewidth=2, label='Z-Displacement at z=4')
+        plt.xlabel('Y Coordinate (m)')
+        plt.ylabel('Z-Displacement (m)')
+        plt.title('Foundation Heave (Z-Displacement) at z=4.0 (Slice x=2.0)')
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig('GroutingSimulation/results/grouting_simulation/displacement_z4_curve.png', dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"位移曲线已保存: GroutingSimulation/results/grouting_simulation/displacement_z4_curve.png")
+        
+        # 打印统计信息
+        print(f"\n曲线数据统计:")
+        print(f"z=3压力曲线: y范围 [{y_coords.min():.3f}, {y_coords.max():.3f}] m, 压力范围 [{pressures_sorted.min():.1f}, {pressures_sorted.max():.1f}] Pa")
+        print(f"z=4位移曲线: y范围 [{y_coords_z4.min():.3f}, {y_coords_z4.max():.3f}] m, 位移范围 [{displacements_sorted.min():.6f}, {displacements_sorted.max():.6f}] m")
+        
+    except Exception as e:
+        print(f"曲线绘制失败: {e}")
+        import traceback
+        traceback.print_exc()
