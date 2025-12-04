@@ -22,9 +22,10 @@ def create_foundation_with_drill_hole():
     gmsh.model.add("foundation_drilling")
     
     # 参数设置
-    foundation_size = 4.0  # 地基尺寸 4x4x4 m
+    foundation_size= 4.0   # 长宽 4 m
+    foundation_height = 14.0  # z 方向
     hole_diameter = 0.08   # 钻孔直径 8 cm
-    hole_depth = 2.0       # 钻孔深度 2 m
+    hole_depth = 10.0       # 钻孔深度 10 m
     hole_radius = hole_diameter / 2
     
     # 设置网格尺寸
@@ -35,14 +36,14 @@ def create_foundation_with_drill_hole():
     foundation = gmsh.model.occ.addBox(0, 0, 0, 
                                       foundation_size, 
                                       foundation_size, 
-                                      foundation_size)
+                                      foundation_height)
     
     # 创建钻孔圆柱体（位于地基中心）
     center_x = foundation_size / 2
     center_y = foundation_size / 2
     
     # 钻孔圆柱体（从顶部到底部，稍微延长一点避免边界问题）
-    drill_hole = gmsh.model.occ.addCylinder(center_x, center_y, foundation_size + 0.001, 
+    drill_hole = gmsh.model.occ.addCylinder(center_x, center_y, foundation_height + 0.001, 
                                            0, 0, -hole_depth - 0.002, 
                                            hole_radius)
     
@@ -52,10 +53,17 @@ def create_foundation_with_drill_hole():
     # --- 提取钻孔圆柱的侧壁（在 fragment 前！）---
     cyl_surfaces = gmsh.model.getBoundary([(3, drill_hole)], oriented=False, recursive=False)
     cylinder_lateral_surface = None
+    cylinder_bottom_surface = None
     for dim, surf_tag in cyl_surfaces:
         edges = gmsh.model.getBoundary([(2, surf_tag)], oriented=False, recursive=False)
         if len(edges) == 2:  # 侧面有两个边界环
             cylinder_lateral_surface = surf_tag
+        elif len(edges) == 1:
+        # 底面或顶面：一个圆环
+        # 判断 z 坐标
+            com_surf = gmsh.model.occ.getCenterOfMass(2, surf_tag)
+            if abs(com_surf[2] - (foundation_height - hole_depth)) < 0.1:
+                cylinder_bottom_surface = surf_tag
             break
     
     # Fragment操作会保留所有体积但将它们分割开
@@ -73,14 +81,13 @@ def create_foundation_with_drill_hole():
     drill_hole_volumes = []
     
     for vol in volumes:
-        # 获取体积的中心点来判断属于哪个部分
-        com = gmsh.model.occ.getCenterOfMass(vol[0], vol[1])
-        # 如果中心点在钻孔半径范围内，则认为是钻孔部分
-        distance_from_center = math.sqrt((com[0] - center_x)**2 + (com[1] - center_y)**2)
-        if distance_from_center < hole_radius * 1.1 and com[2] > foundation_size - hole_depth:
-            drill_hole_volumes.append(vol[1])
+        vol_tag = vol[1]
+        volume = gmsh.model.occ.getMass(3, vol_tag)  # 获取体积
+        expected_drill_vol = math.pi * hole_radius**2 * hole_depth
+        if volume < expected_drill_vol * 1.2:  # 小于预期钻孔体积的 1.2 倍
+            drill_hole_volumes.append(vol_tag)
         else:
-            foundation_volumes.append(vol[1])
+            foundation_volumes.append(vol_tag)
     
     print(f"Foundation volumes: {len(foundation_volumes)}")
     print(f"Drill hole volumes: {len(drill_hole_volumes)}")
@@ -128,30 +135,29 @@ def create_foundation_with_drill_hole():
         if abs(distance_from_axis - hole_radius) < 0.04 and \
            foundation_size - hole_depth - tol <= com[2] <= foundation_size + tol:
             cylinder_wall_surfaces.append(surface[1])
-        '''
         distance_from_axis = math.sqrt((com[0] - center_x)**2 + (com[1] - center_y)**2)
         # 检查是否为圆柱体底面
         # 圆柱体底面的点在钻孔半径内，且z坐标接近钻孔底部
         if distance_from_axis < hole_radius + tol and \
-             abs(com[2] - (foundation_size - hole_depth)) < tol:
+             abs(com[2] - (foundation_height - hole_depth)) < tol:
             cylinder_bottom_surfaces.append(surface[1])
-        
+        '''
         # 检查是否为地基底面 (z=0)
-        elif abs(com[2]) < tol:
+        if abs(com[2]) < tol:
             foundation_bottom_surfaces.append(surface[1])
         
         # 检查是否为垂直于x方向的面 (x=0 和 x=4)
-        elif abs(com[0]) < tol and com[2] > 0 and com[2] < foundation_size:
+        elif abs(com[0]) < tol and com[2] > 0 and com[2] < foundation_height:
             foundation_xmin_surfaces.append(surface[1])
-        elif abs(com[0] - foundation_size) < tol and com[2] > 0 and com[2] < foundation_size:
+        elif abs(com[0] - foundation_size) < tol and com[2] > 0 and com[2] < foundation_height:
             foundation_xmax_surfaces.append(surface[1])
         
         # 检查是否为垂直于y方向的面 (y=0 和 y=4)
-        elif abs(com[1]) < tol and com[2] > 0 and com[2] < foundation_size:
+        elif abs(com[1]) < tol and com[2] > 0 and com[2] < foundation_height:
             foundation_ymin_surfaces.append(surface[1])
-        elif abs(com[1] - foundation_size) < tol and com[2] > 0 and com[2] < foundation_size:
+        elif abs(com[1] - foundation_size) < tol and com[2] > 0 and com[2] < foundation_height:
             foundation_ymax_surfaces.append(surface[1])
-    
+
     # 创建边界物理组
     '''
     if cylinder_wall_surfaces:
@@ -165,10 +171,9 @@ def create_foundation_with_drill_hole():
     else:
         print("⚠️ Warning: Cylinder wall not tagged.")
     
-    if cylinder_bottom_surfaces:
-        gmsh.model.addPhysicalGroup(2, cylinder_bottom_surfaces, cylinder_bottom_tag)
-        gmsh.model.setPhysicalName(2, cylinder_bottom_tag, "CylinderBottom")
-        print(f"Cylinder bottom surfaces: {len(cylinder_bottom_surfaces)}")
+    if cylinder_bottom_surface is not None:
+        gmsh.model.addPhysicalGroup(2, [cylinder_bottom_surface], 102)
+        gmsh.model.setPhysicalName(2, 102, "CylinderWall")
     
     if foundation_xmin_surfaces:
         gmsh.model.addPhysicalGroup(2, foundation_xmin_surfaces, foundation_xmin_tag)
@@ -294,7 +299,7 @@ def visualize_with_pyvista(msh, cell_markers, facet_markers):
         # 使用自定义颜色映射
         cmap = ["yellow", "lightblue"]  # 索引0:黄色, 索引1:淡蓝色
         plotter.add_mesh(grid, scalars='Colors', show_edges=True, 
-                        cmap=cmap, opacity=0.8, clim=[1, 2])
+                        cmap=cmap, opacity=1.0, clim=[1, 2])
     else:
         plotter.add_mesh(grid, color="lightblue", show_edges=False, opacity=0.8)
     

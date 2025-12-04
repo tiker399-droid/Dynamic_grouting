@@ -16,7 +16,7 @@ print(f"Mesh imported: {msh.topology.index_map(3).size_local} cells")
 print(f"Cell markers: {np.unique(cell_markers.values)}")
 
 # 材料参数
-E = 2e6  # Young's modulus
+E = 20e6  # Young's modulus
 nu = 0.3   # Poisson's ratio
 rhos_sat = 2700  # Soil density
 rho_w = 1000  # Water density
@@ -27,8 +27,8 @@ lambda_ = E * nu / ((1 + nu) * (1 - 2 * nu))
 mu_ = E / (2 * (1 + nu))
 
 # 几何参数
-foundation_size = 4.0
-hole_depth = 2.0
+foundation_size = 14.0
+hole_depth = 10.0
 num_layers = 10
 layer_height = hole_depth / num_layers
 
@@ -40,6 +40,7 @@ class LayerRemovalManager:
         self.num_layers = num_layers
         self.layer_height = hole_depth / num_layers
         self.foundation_size = foundation_size
+        self.hole_depth = hole_depth
         
         # 初始所有层都激活
         self.active_layers = set(range(num_layers))
@@ -48,28 +49,36 @@ class LayerRemovalManager:
         self.cell_layers = self._compute_cell_layers()
         
     def _compute_cell_layers(self):
-        """计算每个圆柱体单元所属的层"""
         cells = np.arange(self.msh.topology.index_map(3).size_local)
-        drillhole_mask = self.cell_markers.values == 2  # 钻孔区域标记为2
-        
-        # 获取单元坐标
-        cell_coordinates = self.msh.geometry.x[self.msh.geometry.dofmap]
-        
-        cell_layers = np.full(len(cells), -1)  # -1表示非圆柱体单元
-        
-        for cell in np.where(drillhole_mask)[0]:
-            # 获取单元所有节点的z坐标
-            cell_z_coords = cell_coordinates[cell, :, 2]
-            cell_center_z = np.mean(cell_z_coords)
-            
-            # 计算从顶部开始的深度
-            depth_from_top = self.foundation_size - cell_center_z
-            
-            # 计算所属层 (0到num_layers-1)
-            layer = int(depth_from_top / self.layer_height)
-            layer = min(layer, self.num_layers - 1)  # 确保在范围内
-            cell_layers[cell] = layer
-        
+        cell_layers = np.full(len(cells), -1)
+
+        # 获取单元中心坐标
+        x = self.msh.geometry.x
+        cell_to_dofs = self.msh.geometry.dofmap
+
+        # 钻孔几何参数（必须与 MeshCreate.py 一致！）
+        foundation_length = 4.0
+        foundation_width = 4.0
+        hole_radius = 0.04
+        center_x = foundation_length / 2
+        center_y = foundation_width / 2
+        hole_top_z = self.foundation_size
+        hole_bottom_z = hole_top_z - self.hole_depth
+
+        for cell in range(len(cells)):
+            dofs = cell_to_dofs[cell]
+            coords = x[dofs]
+            cell_center = np.mean(coords, axis=0)
+            xc, yc, zc = cell_center
+
+            # ✅ 新增判断：仅当单元在钻孔圆柱内时才分配层
+            radial_dist = np.sqrt((xc - center_x)**2 + (yc - center_y)**2)
+            if radial_dist <= hole_radius and zc >= hole_bottom_z - 1e-3:
+                depth_from_top = hole_top_z - zc
+                layer = int(depth_from_top / self.layer_height)
+                if layer < self.num_layers:  # 防止因浮点误差越界
+                    cell_layers[cell] = layer
+
         return cell_layers
     
     def remove_layer(self, layer):
@@ -205,7 +214,8 @@ for step in range(num_layers + 1):  # 包括初始状态（step=0）
     active_meshtag = layer_manager.create_active_meshtag()
     
     # 定义在激活单元上的积分测度
-    dx_active = ufl.Measure("dx", domain=msh, subdomain_data=active_meshtag)
+    dx_active = ufl.Measure("dx", domain=msh, subdomain_data=active_meshtag,
+                        metadata={"quadrature_degree": 2})
     
     # 变分形式（只在激活单元上积分）
     u = ufl.TrialFunction(V_u)
