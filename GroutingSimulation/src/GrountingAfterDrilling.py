@@ -17,10 +17,10 @@ class GroutingSimulation:
         self.grout_density = grout_density
         self.rho_w = 1000  # 水密度
         self.g = 9.81      # 重力加速度
-        self.p_z = 1e6
+        self.p_z = 3.8e5
 
         # 材料参数（土体）
-        self.E = 2e6      # 杨氏模量
+        self.E = 20e6      # 杨氏模量
         self.nu = 0.3      # 泊松比
         self.k = 1e-12     # 渗透系数 (m/s)
         self.mu = 1e-3     # 水的动力粘度 (Pa·s)
@@ -67,7 +67,12 @@ class GroutingSimulation:
         self.foundation_domain = self.cell_markers
         
         # 创建只在计算域上积分的测量
-        self.dx_foundation = ufl.Measure("dx", domain=self.msh, subdomain_data=self.foundation_domain)
+        self.dx_foundation = ufl.Measure(
+        "dx", 
+        domain=self.msh, 
+        subdomain_data=self.foundation_domain,
+        metadata={"quadrature_degree": 2}  # 四点积分
+        )
     
     def set_boundary_conditions(self):
         """设置边界条件 - 顶部压力为0,地基四周和钻孔施加静水压力分布"""
@@ -108,7 +113,7 @@ class GroutingSimulation:
             # 压力边界条件
             self.bcs_p = []
             
-            foundation_size = 4.0  # 地基高度
+            foundation_size = 14.0  # 地基高度
             x = ufl.SpatialCoordinate(self.msh)
             
             # 通过几何位置识别顶部边界并施加0压力
@@ -132,12 +137,15 @@ class GroutingSimulation:
             water_hydrostatic_pressure = self.rho_w * self.g * (foundation_size - x[2])
             
             # 钻孔边界施加浆液静止压力分布（浆液密度）
-            grout_hydrostatic_pressure = self.p_z + self.grout_density * self.g * (foundation_size - x[2])
+            grout_hydrostatic_pressure = Constant(msh, self.p_z) #+ self.grout_density * self.g * (foundation_size - x[2])
             
             # 创建压力表达式
             water_pressure_expr = fem.Expression(water_hydrostatic_pressure, self.V_p.element.interpolation_points())
             grout_pressure_expr = fem.Expression(grout_hydrostatic_pressure, self.V_p.element.interpolation_points())
-            
+
+
+            self.depth = 10.0  # 钻孔深度（米）
+            self.height = 14.0  # 地基高度（米）
             # 四周边界（标记103,104,105,106）- 施加水静水压力
             side_boundaries = [103, 104, 105, 106]  # FoundationXmin, Xmax, Ymin, Ymax
             
@@ -156,8 +164,8 @@ class GroutingSimulation:
             
             # 钻孔边界 - 施加浆液静止压力
             
-            # 只在地面以下40,80,120,160,200cm处施加压力（即深度3.6, 3.2, 2.8, 2.4, 2.0）
-            drill_depths = [3.6, 3.2, 2.8, 2.4, 2.0]  # 对应的深度
+            # 只在某段深度范围内施加压力
+            drill_depths = [self.height-self.depth+1.6, self.height-self.depth+1.2, self.height-self.depth+0.8, self.height-self.depth+0.4, self.height-self.depth]  # 对应的深度
             tolerance = 0.05  # 容差，单位米
 
             # 获取标记为101的圆柱面
@@ -186,7 +194,7 @@ class GroutingSimulation:
                     p_drill.interpolate(grout_pressure_expr)
                     bc_drill = dirichletbc(p_drill, dofs_drill)
                     self.bcs_p.append(bc_drill)
-                    print(f"钻孔边界 {marker} 在深度{drill_depths}处压力边界: {len(drill_facets_selected)} 个面")
+                    print(f"钻孔边界 {marker} 在z={drill_depths}处压力边界: {len(drill_facets_selected)} 个面")
 
             # 注意：我们不再对钻孔底部（标记102）施加压力，因为题目要求的深度都在侧面上。
             
@@ -196,7 +204,7 @@ class GroutingSimulation:
     def find_top_boundary_by_geometry(self):
         """通过几何位置识别顶部边界"""
         top_facets = []
-        foundation_size = 4.0
+        foundation_size = 14.0
         tol = 1e-6
         
         # 获取所有边界面的中心坐标
@@ -241,8 +249,8 @@ class GroutingSimulation:
         
         # 重力项 - 注意重力方向向下，与z轴正方向相反
         gravity_vector = ufl.as_vector([0, 0, -1])
-        L_darcy = fem.form(K * (self.rho_w + self.grout_density) / 2 * self.g * ufl.dot(gravity_vector, ufl.grad(p_test)) * self.dx_foundation(1))
-        
+        # L_darcy = fem.form(K * self.grout_density * self.g * ufl.dot(gravity_vector, ufl.grad(p_test)) * self.dx_foundation(1))
+        L_darcy = fem.form(ufl.inner(fem.Constant(self.msh, PETSc.ScalarType(0.0)), p_test) * self.dx_foundation(1))
         # 组装和求解
         A_darcy = fem.petsc.assemble_matrix(a_darcy, bcs=self.bcs_p)
         A_darcy.assemble()
@@ -552,10 +560,10 @@ if comm.rank == 0:
         slice_x_u = grid_u.slice(normal='x', origin=[2.0, 0, 0])
         slice_x_p = grid_p.slice(normal='x', origin=[2.0, 0, 0])
         
-        # 图1: z=2.8高度处的压力变化曲线 (沿着y方向)
-        print("绘制z=2.8高度处的压力变化曲线...")
+        # 图1: 中间注浆孔高度处的压力变化曲线 (沿着y方向)
+        print("绘制某注浆孔高度处的压力变化曲线...")
         
-        # 从切片中提取z=2.8附近的点
+        # 从切片中提取某注浆孔附近的点
         tolerance = 0.05  # 容差范围
         points_z3 = []
         pressures_z3 = []
@@ -563,22 +571,22 @@ if comm.rank == 0:
         for i in range(slice_x_p.n_points):
             point = slice_x_p.points[i]
             pressure = slice_x_p.point_data["Pressure"][i]
-            # 筛选z坐标在3±tolerance范围内的点
-            if abs(point[2] - 2.8) < tolerance:
+            # 筛选z坐标在±tolerance范围内的点
+            if abs(point[2] - (grouting_sim.height-grouting_sim.depth+0.8)) < tolerance:
                 points_z3.append(point)
                 pressures_z3.append(pressure)
         
         # 按y坐标排序
         sorted_indices = np.argsort([p[1] for p in points_z3])
         y_coords = np.array([points_z3[i][1] for i in sorted_indices])
-        pressures_sorted = np.array([pressures_z3[i] for i in sorted_indices])
+        pressures_sorted = np.array([pressures_z3[i] for i in sorted_indices]) / 1000.0 # 转换为kPa
         
         # 绘制压力变化曲线
         plt.figure(figsize=(10, 6))
-        plt.plot(y_coords, pressures_sorted, 'b-', linewidth=2, label='Pressure at z=3')
+        plt.plot(y_coords, pressures_sorted, 'b-', linewidth=2, label='Pressure at red line')
         plt.xlabel('Y Coordinate (m)')
-        plt.ylabel('Pressure (Pa)')
-        plt.title('Pressure Variation at z=2.8 (Slice x=2.0)')
+        plt.ylabel('Pressure (kPa)')
+        plt.title('Pressure Variation at red line (Slice x=2.0)')
         plt.grid(True, alpha=0.3)
         plt.legend()
         plt.tight_layout()
@@ -587,18 +595,18 @@ if comm.rank == 0:
         
         print(f"压力变化曲线已保存: GroutingSimulation/results/grouting_simulation/pressure_z3_curve.png")
         
-        # 图2: z=4高度处的地基隆起位移曲线 (沿着y方向)
-        print("绘制z=4高度处的地基隆起位移曲线...")
+        # 图2: 地面高度处的地基隆起位移曲线 (沿着y方向)
+        print("绘制地面高度处的地基隆起位移曲线...")
         
-        # 从位移切片中提取z=4附近的点
+        # 从位移切片中提取地面附近的点
         points_z4 = []
         displacements_z4 = []
         
         for i in range(slice_x_u.n_points):
             point = slice_x_u.points[i]
             displacement_z = slice_x_u.point_data["Displacement_Z"][i]
-            # 筛选z坐标在4±tolerance范围内的点
-            if abs(point[2] - 4.0) < tolerance:
+            # 筛选z坐标在地面±tolerance范围内的点
+            if abs(point[2] - grouting_sim.height) < tolerance:
                 points_z4.append(point)
                 displacements_z4.append(displacement_z)
         
@@ -609,10 +617,10 @@ if comm.rank == 0:
         
         # 绘制位移曲线
         plt.figure(figsize=(10, 6))
-        plt.plot(y_coords_z4, displacements_sorted, 'r-', linewidth=2, label='Z-Displacement at z=4')
+        plt.plot(y_coords_z4, displacements_sorted, 'r-', linewidth=2, label='Z-Displacement at ground')
         plt.xlabel('Y Coordinate (m)')
         plt.ylabel('Z-Displacement (m)')
-        plt.title('Foundation Heave (Z-Displacement) at z=4.0 (Slice x=2.0)')
+        plt.title('Foundation Heave (Z-Displacement) at ground (Slice x=2.0)')
         plt.grid(True, alpha=0.3)
         plt.legend()
         plt.tight_layout()
@@ -623,7 +631,7 @@ if comm.rank == 0:
         
         # 打印统计信息
         print(f"\n曲线数据统计:")
-        print(f"z=3压力曲线: y范围 [{y_coords.min():.3f}, {y_coords.max():.3f}] m, 压力范围 [{pressures_sorted.min():.1f}, {pressures_sorted.max():.1f}] Pa")
+        print(f"z=3压力曲线: y范围 [{y_coords.min():.3f}, {y_coords.max():.3f}] m, 压力范围 [{pressures_sorted.min():.1f}, {pressures_sorted.max():.1f}] kPa")
         print(f"z=4位移曲线: y范围 [{y_coords_z4.min():.3f}, {y_coords_z4.max():.3f}] m, 位移范围 [{displacements_sorted.min():.6f}, {displacements_sorted.max():.6f}] m")
         
     except Exception as e:
