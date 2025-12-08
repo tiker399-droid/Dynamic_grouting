@@ -27,7 +27,7 @@ lambda_ = E * nu / ((1 + nu) * (1 - 2 * nu))
 mu_ = E / (2 * (1 + nu))
 
 # 几何参数
-foundation_size = 14.0
+foundation_size = 13.0
 hole_depth = 10.0
 num_layers = 10
 layer_height = hole_depth / num_layers
@@ -59,7 +59,7 @@ class LayerRemovalManager:
         # 钻孔几何参数（必须与 MeshCreate.py 一致！）
         foundation_length = 4.0
         foundation_width = 4.0
-        hole_radius = 0.04
+        hole_radius = 0.05
         center_x = foundation_length / 2
         center_y = foundation_width / 2
         hole_top_z = self.foundation_size

@@ -8,6 +8,8 @@ import ufl
 import h5py
 import os
 import matplotlib.pyplot as plt
+import pyvista
+
 
 class GroutingSimulation:
     def __init__(self, msh, cell_markers, facet_markers, initial_displacement=None, grout_density=1800):
@@ -15,271 +17,205 @@ class GroutingSimulation:
         self.cell_markers = cell_markers
         self.facet_markers = facet_markers
         self.grout_density = grout_density
-        self.rho_w = 1000  # 水密度
-        self.g = 9.81      # 重力加速度
-        self.p_z = 3.8e5
+        
+        # 物理常数
+        self.rho_w = 1000    # 水密度 (kg/m³)
+        self.g = 9.81        # 重力加速度 (m/s²)
+        self.p_z = 3.8e5     # 注浆压力 (Pa)
 
-        # 材料参数（土体）
-        self.E = 20e6      # 杨氏模量
-        self.nu = 0.3      # 泊松比
-        self.k = 1e-12     # 渗透系数 (m/s)
-        self.mu = 1e-3     # 水的动力粘度 (Pa·s)
+        # 材料参数
+        self.E = 20e6        # 杨氏模量 (Pa)
+        self.nu = 0.3        # 泊松比
+        self.k = 1e-12       # 渗透系数 (m/s)
+        self.mu = 1e-3       # 水的动力粘度 (Pa·s)
         
         # 计算拉梅常数
         self.lambda_ = self.E * self.nu / ((1 + self.nu) * (1 - 2 * self.nu))
         self.mu_ = self.E / (2 * (1 + self.nu))
-        
-        # 创建函数空间 - 使用完整网格
+
+        # 几何参数
+        self.depth = 10.0    # 钻孔深度 (m)
+        self.height = 13.0   # 地基高度 (m)
+
+        # 创建函数空间
         self.V_u = functionspace(msh, ('CG', 1, (msh.topology.dim,)))  # 位移空间
-        self.V_p = functionspace(msh, ("CG", 1))  # 压力空间
-        
-        # 初始化位移场
+        self.V_p = functionspace(msh, ("CG", 1))                       # 压力空间
+
+        # 初始化场变量
         self.u = Function(self.V_u)
         self.u_initial = Function(self.V_u)
+        self.u_increment = Function(self.V_u)
+        self.p = Function(self.V_p)
+        
+        self._init_displacement_field(initial_displacement)
+        self._setup_simulation_domain()
+        self._setup_boundary_conditions()
+
+    def _init_displacement_field(self, initial_displacement):
+        """初始化位移场"""
         if initial_displacement is not None:
             self.u.x.array[:] = initial_displacement.flatten()
             self.u_initial.x.array[:] = initial_displacement.flatten()
         else:
-            self.u.x.array[:] = 0.0  # 如果没有初始位移，设为0
-        self.u_increment = Function(self.V_u)
-        # 初始化压力场
-        self.p = Function(self.V_p)
-        
-        # 创建地基单元标记
-        self.create_foundation_domain()
-        
-        # 设置边界条件
-        self.set_boundary_conditions()
-        
-    def create_foundation_domain(self):
-        """创建地基计算域（排除钻孔区域）"""
-        print("创建地基计算域...")
-        
-        # 获取地基单元（标记为1）
+            self.u.x.array[:] = 0.0
+
+    def _setup_simulation_domain(self):
+        """设置计算域（排除钻孔区域）"""
         foundation_cells = np.where(self.cell_markers.values == 1)[0]
-        
         if len(foundation_cells) == 0:
             raise ValueError("未找到标记为1的地基单元!")
-        
-        print(f"地基单元数量: {len(foundation_cells)}")
-        
-        # 直接使用现有的cell_markers，不创建新的MeshTags
+
         self.foundation_domain = self.cell_markers
-        
-        # 创建只在计算域上积分的测量
         self.dx_foundation = ufl.Measure(
-        "dx", 
-        domain=self.msh, 
-        subdomain_data=self.foundation_domain,
-        metadata={"quadrature_degree": 2}  # 四点积分
+            "dx", domain=self.msh, subdomain_data=self.foundation_domain,
+            metadata={"quadrature_degree": 2}
         )
-    
-    def set_boundary_conditions(self):
-        """设置边界条件 - 顶部压力为0,地基四周和钻孔施加静水压力分布"""
+
+    def _setup_boundary_conditions(self):
+        """设置边界条件"""
         fdim = self.msh.topology.dim - 1
+        unique_markers = np.unique(self.facet_markers.values)
         
-        # 检查可用的边界标记
-        if self.facet_markers is not None:
-            unique_markers = np.unique(self.facet_markers.values)
-            print(f"可用的边界标记: {unique_markers}")
-            
-            # 位移边界条件
-            self.bcs_u = []
-            
-            # 底部边界条件：固定（标记107）
-            if 107 in unique_markers:
-                facets_bottom = self.facet_markers.find(107)  # FoundationBottom
-                bottoms_dofs = fem.locate_dofs_topological(self.V_u, fdim, facets_bottom)
-                bc_bottom = dirichletbc(PETSc.ScalarType((0, 0, 0)), bottoms_dofs, self.V_u)
-                self.bcs_u.append(bc_bottom)
-                print(f"底部位移边界: {len(facets_bottom)} 个面")
-            
-            # 四周边界条件：法向约束
-            boundary_pairs = [
-                (103, 0),  # FoundationXmin, x方向固定
-                (104, 0),  # FoundationXmax, x方向固定
-                (105, 1),  # FoundationYmin, y方向固定
-                (106, 1)   # FoundationYmax, y方向固定
-            ]
-            
-            for marker, component in boundary_pairs:
-                if marker in unique_markers:
-                    facets = self.facet_markers.find(marker)
-                    dofs = fem.locate_dofs_topological(self.V_u.sub(component), fdim, facets)
-                    bc = dirichletbc(PETSc.ScalarType(0), dofs, self.V_u.sub(component))
-                    self.bcs_u.append(bc)
-                    print(f"边界 {marker} 位移边界: {len(facets)} 个面")
-            
-            # 压力边界条件
-            self.bcs_p = []
-            
-            foundation_size = 14.0  # 地基高度
-            x = ufl.SpatialCoordinate(self.msh)
-            
-            # 通过几何位置识别顶部边界并施加0压力
-            print("通过几何位置识别顶部边界...")
-            facets_top = self.find_top_boundary_by_geometry()
-            if len(facets_top) > 0:
-                dofs_top = fem.locate_dofs_topological(self.V_p, fdim, facets_top)
-                
-                # 创建0压力函数
-                p_top = Function(self.V_p)
-                p_top.x.array[:] = 0.0  # 设置为0压力
-                
-                bc_top = dirichletbc(p_top, dofs_top)
-                self.bcs_p.append(bc_top)
-                print(f"顶部边界压力边界: {len(facets_top)} 个面")
-            else:
-                print("警告: 未找到顶部边界")
-            
-            # 四周边界施加静水压力分布（水密度）
-            # 注意：静水压力从顶部开始计算，所以公式为 P = ρg*(顶部高度 - z)
-            water_hydrostatic_pressure = self.rho_w * self.g * (foundation_size - x[2])
-            
-            # 钻孔边界施加浆液静止压力分布（浆液密度）
-            grout_hydrostatic_pressure = Constant(msh, self.p_z) #+ self.grout_density * self.g * (foundation_size - x[2])
-            
-            # 创建压力表达式
-            water_pressure_expr = fem.Expression(water_hydrostatic_pressure, self.V_p.element.interpolation_points())
-            grout_pressure_expr = fem.Expression(grout_hydrostatic_pressure, self.V_p.element.interpolation_points())
+        self.bcs_u = self._create_displacement_bcs(unique_markers, fdim)
+        self.bcs_p = self._create_pressure_bcs(unique_markers, fdim)
 
+    def _create_displacement_bcs(self, unique_markers, fdim):
+        """创建位移边界条件"""
+        bcs = []
+        
+        # 底部固定边界
+        if 107 in unique_markers:
+            facets_bottom = self.facet_markers.find(107)
+            dofs = fem.locate_dofs_topological(self.V_u, fdim, facets_bottom)
+            bcs.append(dirichletbc(PETSc.ScalarType((0, 0, 0)), dofs, self.V_u))
 
-            self.depth = 10.0  # 钻孔深度（米）
-            self.height = 14.0  # 地基高度（米）
-            # 四周边界（标记103,104,105,106）- 施加水静水压力
-            side_boundaries = [103, 104, 105, 106]  # FoundationXmin, Xmax, Ymin, Ymax
-            
-            for marker in side_boundaries:
-                if marker in unique_markers:
-                    facets_side = self.facet_markers.find(marker)
-                    dofs_side = fem.locate_dofs_topological(self.V_p, fdim, facets_side)
-                    
-                    # 创建压力函数并插值
-                    p_side = Function(self.V_p)
-                    p_side.interpolate(water_pressure_expr)
-                    
-                    bc_side = dirichletbc(p_side, dofs_side)
-                    self.bcs_p.append(bc_side)
-                    print(f"边界 {marker} 水压力边界: {len(facets_side)} 个面")
-            
-            # 钻孔边界 - 施加浆液静止压力
-            
-            # 只在某段深度范围内施加压力
-            drill_depths = [self.height-self.depth+1.6, self.height-self.depth+1.2, self.height-self.depth+0.8, self.height-self.depth+0.4, self.height-self.depth]  # 对应的深度
-            tolerance = 0.05  # 容差，单位米
-
-            # 获取标记为101的圆柱面
-            marker = 101
+        # 四周边界约束
+        boundary_constraints = [(103, 0), (104, 0), (105, 1), (106, 1)]
+        for marker, component in boundary_constraints:
             if marker in unique_markers:
-                facets_drill = self.facet_markers.find(marker)
-                # 获取这些面的中心坐标
-                facet_geom = self.msh.geometry.x
-                facet_to_vertex = self.msh.topology.connectivity(fdim, 0)
-                drill_facets_selected = []
-                for facet in facets_drill:
-                    vertices = facet_to_vertex.links(facet)
-                    # 计算面的中心
-                    center = np.mean(facet_geom[vertices], axis=0)
-                    z = center[2]
-                    # 检查这个面的中心是否在任何一个指定深度附近
-                    for depth in drill_depths:
-                        if abs(z - depth) < tolerance:
-                            drill_facets_selected.append(facet)
-                            break  # 只要匹配一个深度就跳出内层循环
+                facets = self.facet_markers.find(marker)
+                dofs = fem.locate_dofs_topological(self.V_u.sub(component), fdim, facets)
+                bcs.append(dirichletbc(PETSc.ScalarType(0), dofs, self.V_u.sub(component)))
+        
+        return bcs
 
-                drill_facets_selected = np.array(drill_facets_selected, dtype=np.int32)
-                if len(drill_facets_selected) > 0:
-                    dofs_drill = fem.locate_dofs_topological(self.V_p, fdim, drill_facets_selected)
-                    p_drill = Function(self.V_p)
-                    p_drill.interpolate(grout_pressure_expr)
-                    bc_drill = dirichletbc(p_drill, dofs_drill)
-                    self.bcs_p.append(bc_drill)
-                    print(f"钻孔边界 {marker} 在z={drill_depths}处压力边界: {len(drill_facets_selected)} 个面")
+    def _create_pressure_bcs(self, unique_markers, fdim):
+        """创建压力边界条件"""
+        bcs = []
+        x = ufl.SpatialCoordinate(self.msh)
+        
+        # 顶部自由排水边界
+        facets_top = self._find_top_boundary()
+        if len(facets_top) > 0:
+            dofs_top = fem.locate_dofs_topological(self.V_p, fdim, facets_top)
+            p_top = Function(self.V_p)
+            p_top.x.array[:] = 0.0
+            bcs.append(dirichletbc(p_top, dofs_top))
 
-            # 注意：我们不再对钻孔底部（标记102）施加压力，因为题目要求的深度都在侧面上。
-            
-            # 注意：地基底部（标记107）没有设置压力边界条件，这意味着它是自然边界条件（不透水）
-            print("地基底部设置为不透水边界（自然边界条件）")
+        # 创建压力表达式
+        water_pressure = self.rho_w * self.g * (self.height - x[2])
+        water_pressure_expr = fem.Expression(water_pressure, self.V_p.element.interpolation_points())
+        grout_pressure_expr = fem.Expression(Constant(self.msh, self.p_z), self.V_p.element.interpolation_points())
 
-    def find_top_boundary_by_geometry(self):
-        """通过几何位置识别顶部边界"""
+        # 四周边界施加水压力
+        for marker in [103, 104, 105, 106]:
+            if marker in unique_markers:
+                self._apply_pressure_on_boundary(marker, water_pressure_expr, bcs, fdim)
+
+        # 钻孔边界施加注浆压力
+        if 101 in unique_markers:
+            self._apply_grouting_pressure(grout_pressure_expr, bcs, fdim)
+        
+        return bcs
+
+    def _find_top_boundary(self):
+        """识别顶部边界"""
         top_facets = []
-        foundation_size = 14.0
-        tol = 1e-6
-        
-        # 获取所有边界面的中心坐标
         fdim = self.msh.topology.dim - 1
-        all_facets = np.where(self.facet_markers.values >= 0)[0]
-        
-        # 获取边界面的几何信息
         facet_geom = self.msh.geometry.x
         facet_to_vertex = self.msh.topology.connectivity(fdim, 0)
         
-        for facet in all_facets:
-            # 获取边界面的顶点
+        for facet in np.where(self.facet_markers.values >= 0)[0]:
             vertices = facet_to_vertex.links(facet)
-            
-            # 计算边界面的平均高度
             avg_z = np.mean(facet_geom[vertices, 2])
-            
-            # 如果平均高度接近地基顶部，则认为是顶部边界
-            if abs(avg_z - foundation_size) < tol:
+            if abs(avg_z - self.height) < 1e-6:
                 top_facets.append(facet)
         
-        print(f"通过几何位置找到 {len(top_facets)} 个顶部边界面")
         return np.array(top_facets, dtype=np.int32)
-    
-    def darcy_law(self):
-        """求解达西定律得到压力场 - 使用钻孔边界条件"""
-        print("求解达西定律...")
+
+    def _apply_pressure_on_boundary(self, marker, pressure_expr, bcs, fdim):
+        """在边界上施加压力"""
+        facets = self.facet_markers.find(marker)
+        dofs = fem.locate_dofs_topological(self.V_p, fdim, facets)
+        p_func = Function(self.V_p)
+        p_func.interpolate(pressure_expr)
+        bcs.append(dirichletbc(p_func, dofs))
+
+    def _apply_grouting_pressure(self, pressure_expr, bcs, fdim):
+        """在钻孔边界施加注浆压力"""
+        facets_drill = self.facet_markers.find(101)
+        facet_geom = self.msh.geometry.x
+        facet_to_vertex = self.msh.topology.connectivity(fdim, 0)
         
-        # 达西定律: q = - (k/μ)(∇P - ρg)
-        # 连续性方程: ∇·q = 0
-        # 组合: ∇·(-(k/μ)(∇P - ρg)) = 0
+        # 钻孔压力施加深度
+        drill_depths = [
+            self.height - self.depth + 1.6,
+            self.height - self.depth + 1.2,
+            self.height - self.depth + 0.8,
+            self.height - self.depth + 0.4,
+            self.height - self.depth
+        ]
         
+        selected_facets = []
+        for facet in facets_drill:
+            vertices = facet_to_vertex.links(facet)
+            center = np.mean(facet_geom[vertices], axis=0)
+            z = center[2]
+            if any(abs(z - depth) < 0.05 for depth in drill_depths):
+                selected_facets.append(facet)
+        
+        if selected_facets:
+            selected_facets = np.array(selected_facets, dtype=np.int32)
+            dofs = fem.locate_dofs_topological(self.V_p, fdim, selected_facets)
+            p_drill = Function(self.V_p)
+            p_drill.interpolate(pressure_expr)
+            bcs.append(dirichletbc(p_drill, dofs))
+        
+    def solve_darcy_law(self):
+        """求解达西定律得到压力场"""
         # 测试函数和试验函数
         p_trial = ufl.TrialFunction(self.V_p)
         p_test = ufl.TestFunction(self.V_p)
         
-        # 水力传导系数
-        K = self.k / self.mu
+        K = self.k / self.mu  # 水力传导系数
         
-        # 达西定律变分形式
-        a_darcy = fem.form(K * ufl.dot(ufl.grad(p_trial), ufl.grad(p_test)) * self.dx_foundation(1))
+        # 变分形式
+        a = fem.form(K * ufl.dot(ufl.grad(p_trial), ufl.grad(p_test)) * self.dx_foundation(1))
+        L = fem.form(ufl.inner(fem.Constant(self.msh, PETSc.ScalarType(0.0)), p_test) * self.dx_foundation(1))
         
-        # 重力项 - 注意重力方向向下，与z轴正方向相反
-        gravity_vector = ufl.as_vector([0, 0, -1])
-        # L_darcy = fem.form(K * self.grout_density * self.g * ufl.dot(gravity_vector, ufl.grad(p_test)) * self.dx_foundation(1))
-        L_darcy = fem.form(ufl.inner(fem.Constant(self.msh, PETSc.ScalarType(0.0)), p_test) * self.dx_foundation(1))
-        # 组装和求解
-        A_darcy = fem.petsc.assemble_matrix(a_darcy, bcs=self.bcs_p)
-        A_darcy.assemble()
-        
-        b_darcy = fem.petsc.assemble_vector(L_darcy)
-        fem.petsc.apply_lifting(b_darcy, [a_darcy], [self.bcs_p])
-        b_darcy.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+        # 组装矩阵和向量
+        A = fem.petsc.assemble_matrix(a, bcs=self.bcs_p)
+        A.assemble()
+        b = fem.petsc.assemble_vector(L)
         
         # 应用边界条件
-        fem.petsc.set_bc(b_darcy, self.bcs_p)
-        
-        # 创建求解器
-        ksp_darcy = PETSc.KSP().create(self.msh.comm)
-        ksp_darcy.setOperators(A_darcy)
-        ksp_darcy.setType("cg")
-        ksp_darcy.getPC().setType("hypre")
-        ksp_darcy.setTolerances(rtol=1e-10, atol=1e-10, max_it=1000)
+        fem.petsc.apply_lifting(b, [a], [self.bcs_p])
+        b.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+        fem.petsc.set_bc(b, self.bcs_p)
         
         # 求解压力场
-        ksp_darcy.solve(b_darcy, self.p.x.petsc_vec)
+        solver = PETSc.KSP().create(self.msh.comm)
+        solver.setOperators(A)
+        solver.setType("cg")
+        solver.getPC().setType("hypre")
+        solver.setTolerances(rtol=1e-10, atol=1e-10, max_it=1000)
+        solver.solve(b, self.p.x.petsc_vec)
+        
         self.p.x.scatter_forward()
-        
-        ksp_darcy.destroy()
-        print("达西定律求解完成")
-    
-    def equilibrium_equation(self):
+        solver.destroy()
+
+    def solve_equilibrium(self):
         """求解平衡方程得到位移场"""
-        print("求解平衡方程...")
-        
         # 定义应变和应力
         def epsilon(u):
             return ufl.sym(ufl.grad(u))
@@ -291,45 +227,37 @@ class GroutingSimulation:
         u_trial = ufl.TrialFunction(self.V_u)
         u_test = ufl.TestFunction(self.V_u)
         
-        # 体力 - 使用土体密度
-        soil_density = 2700  # 土体密度 kg/m³
+        # 体力项
+        soil_density = 2700
         f = Constant(self.msh, PETSc.ScalarType((0.0, 0.0, -soil_density * self.g)))
         
-        # 平衡方程变分形式
-        # 总应力 = 有效应力 + 孔隙压力
-        a_elastic = fem.form(ufl.inner(sigma(u_trial), epsilon(u_test)) * self.dx_foundation(1))
-        L_elastic = fem.form(ufl.dot(f, u_test) * self.dx_foundation(1) + self.p * ufl.div(u_test) * self.dx_foundation(1))
+        # 变分形式
+        a = fem.form(ufl.inner(sigma(u_trial), epsilon(u_test)) * self.dx_foundation(1))
+        L = fem.form(ufl.dot(f, u_test) * self.dx_foundation(1) + self.p * ufl.div(u_test) * self.dx_foundation(1))
         
-        # 组装和求解
-        A_elastic = petsc.assemble_matrix(a_elastic, bcs=self.bcs_u)
-        A_elastic.assemble()
-        
-        b_elastic = petsc.assemble_vector(L_elastic)
-        petsc.apply_lifting(b_elastic, [a_elastic], [self.bcs_u])
-        b_elastic.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+        # 组装矩阵和向量
+        A = petsc.assemble_matrix(a, bcs=self.bcs_u)
+        A.assemble()
+        b = petsc.assemble_vector(L)
         
         # 应用边界条件
-        petsc.set_bc(b_elastic, self.bcs_u)
-        
-        # 创建求解器
-        ksp_elastic = PETSc.KSP().create(self.msh.comm)
-        ksp_elastic.setOperators(A_elastic)
-        ksp_elastic.setType("cg")
-        ksp_elastic.getPC().setType("hypre")
-        ksp_elastic.setTolerances(rtol=1e-8, atol=1e-8, max_it=1000)
+        petsc.apply_lifting(b, [a], [self.bcs_u])
+        b.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+        petsc.set_bc(b, self.bcs_u)
         
         # 求解位移场
-        ksp_elastic.solve(b_elastic, self.u.x.petsc_vec)
+        solver = PETSc.KSP().create(self.msh.comm)
+        solver.setOperators(A)
+        solver.setType("cg")
+        solver.getPC().setType("hypre")
+        solver.setTolerances(rtol=1e-8, atol=1e-8, max_it=1000)
+        solver.solve(b, self.u.x.petsc_vec)
+        
         self.u.x.scatter_forward()
-        
-        ksp_elastic.destroy()
-        print("平衡方程求解完成")
-    
-    def run_grouting_simulation(self):
-        """运行灌浆模拟 - 单次计算"""
-        print("开始灌浆模拟...")
-        
-        # 创建输出目录
+        solver.destroy()
+
+    def run_simulation(self):
+        """运行灌浆模拟"""
         output_dir = "GroutingSimulation/results/grouting_simulation"
         if self.msh.comm.rank == 0 and not os.path.exists(output_dir):
             os.makedirs(output_dir)
@@ -338,36 +266,36 @@ class GroutingSimulation:
         self.save_results("initial", output_dir)
         self.print_statistics("initial")
         
+        # 求解过程
         print("\n=== 灌浆过程 ===")
+        self.solve_darcy_law()
+        self.solve_equilibrium()
         
-        # 求解达西定律得到压力场
-        self.darcy_law()
-        
-        # 求解平衡方程得到位移场
-        self.equilibrium_equation()
+        # 计算位移增量
+        self.u_increment.x.array[:] = self.u.x.array[:] - self.u_initial.x.array[:]
         
         # 保存结果
         self.save_results("final", output_dir)
-        
-        # 打印统计信息
         self.print_statistics("final")
         
+        # 可视化
+        if self.msh.comm.rank == 0:
+            self._visualize_results(output_dir)
+        
         print(f"\n灌浆模拟完成! 结果保存在 {output_dir}")
-    
+
     def save_results(self, step, output_dir):
-        """保存结果"""
-        # 保存位移场
+        """保存场变量"""
         with io.XDMFFile(self.msh.comm, f"{output_dir}/displacement_{step}.xdmf", "w") as xdmf:
             xdmf.write_mesh(self.msh)
             xdmf.write_function(self.u)
         
-        # 保存压力场
         with io.XDMFFile(self.msh.comm, f"{output_dir}/pressure_{step}.xdmf", "w") as xdmf:
             xdmf.write_mesh(self.msh)
             xdmf.write_function(self.p)
-    
+
     def print_statistics(self, step):
-        """打印统计信息"""
+        """打印场变量统计信息"""
         displacement = self.u.x.array.reshape(-1, 3)
         pressure = self.p.x.array
         
@@ -377,29 +305,141 @@ class GroutingSimulation:
             print(f"  压力范围: [{np.min(pressure):.2f}, {np.max(pressure):.2f}] Pa")
             print(f"  最大沉降: {-np.min(displacement[:, 2]):.6e} m")
 
+    def _visualize_results(self, output_dir):
+        """创建结果可视化"""
+        try:
+            self._create_slice_visualizations(output_dir)
+            self._create_analysis_curves(output_dir)
+        except Exception as e:
+            print(f"可视化失败: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _create_slice_visualizations(self, output_dir):
+        """创建切片可视化"""
+        # 位移场切片
+        topology, cell_types, geometry = plot.vtk_mesh(self.V_u)
+        grid = pyvista.UnstructuredGrid(topology, cell_types, geometry)
+        displacement = self.u_increment.x.array.reshape(geometry.shape[0], 3)
+        grid.point_data["Displacement_Z"] = displacement[:, 2]
+        
+        # x=2切片
+        slice_x = grid.slice(normal='x', origin=[2.0, 0, 0])
+        plotter = pyvista.Plotter(off_screen=True, window_size=[1200, 900])
+        plotter.add_mesh(slice_x, scalars="Displacement_Z", cmap="rainbow", show_scalar_bar=True)
+        plotter.add_title("Final Displacement Field - Slice at x=2.0")
+        plotter.add_axes()
+        plotter.view_vector((1, 0, 0))
+        plotter.camera.zoom(1.5)
+        plotter.screenshot(f"{output_dir}/displacement_slice_x2.png")
+        plotter.close()
+        
+        # y=2切片
+        slice_y = grid.slice(normal='y', origin=[0, 2.0, 0])
+        plotter2 = pyvista.Plotter(off_screen=True, window_size=[1200, 900])
+        plotter2.add_mesh(slice_y, scalars="Displacement_Z", cmap="rainbow", show_scalar_bar=True)
+        plotter2.add_title("Final Displacement Field - Slice at y=2.0")
+        plotter2.add_axes()
+        plotter2.view_vector((0, 1, 0))
+        plotter2.camera.zoom(1.5)
+        plotter2.screenshot(f"{output_dir}/displacement_slice_y2.png")
+        plotter2.close()
+        
+        # 压力场切片
+        topology_p, cell_types_p, geometry_p = plot.vtk_mesh(self.V_p)
+        grid_p = pyvista.UnstructuredGrid(topology_p, cell_types_p, geometry_p)
+        grid_p.point_data["Pressure"] = self.p.x.array[:]
+        
+        slice_x_p = grid_p.slice(normal='x', origin=[2.0, 0, 0])
+        plotter3 = pyvista.Plotter(off_screen=True, window_size=[1200, 900])
+        plotter3.add_mesh(slice_x_p, scalars="Pressure", cmap="rainbow", show_scalar_bar=True)
+        plotter3.add_title("Final Pressure Field - Slice at x=2.0")
+        plotter3.add_axes()
+        plotter3.view_vector((1, 0, 0))
+        plotter3.camera.zoom(1.5)
+        plotter3.screenshot(f"{output_dir}/Pressure.png")
+        plotter3.close()
+
+    def _create_analysis_curves(self, output_dir):
+        """创建分析曲线"""
+        # 创建位移场和压力场的网格
+        topology_u, cell_types_u, geometry_u = plot.vtk_mesh(self.V_u)
+        grid_u = pyvista.UnstructuredGrid(topology_u, cell_types_u, geometry_u)
+        displacement = self.u_increment.x.array.reshape(geometry_u.shape[0], 3)
+        grid_u.point_data["Displacement_Z"] = displacement[:, 2]
+        
+        topology_p, cell_types_p, geometry_p = plot.vtk_mesh(self.V_p)
+        grid_p = pyvista.UnstructuredGrid(topology_p, cell_types_p, geometry_p)
+        grid_p.point_data["Pressure"] = self.p.x.array[:]
+        
+        # 获取切片
+        slice_x_u = grid_u.slice(normal='x', origin=[2.0, 0, 0])
+        slice_x_p = grid_p.slice(normal='x', origin=[2.0, 0, 0])
+        
+        # 1. 注浆孔高度处的压力变化曲线
+        pressure_points, pressure_values = self._extract_data_at_height(
+            slice_x_p, self.height - self.depth + 0.8, "Pressure", tolerance=0.05
+        )
+        
+        plt.figure(figsize=(10, 6))
+        plt.plot(pressure_points[:, 1], pressure_values / 1000.0, 'b-', linewidth=2, label='Pressure')
+        plt.xlabel('Y Coordinate (m)')
+        plt.ylabel('Pressure (kPa)')
+        plt.title('Pressure Variation at red line (Slice x=2.0)')
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(f'{output_dir}/pressure_curve.png', dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        # 2. 地面高度处的位移曲线
+        disp_points, disp_values = self._extract_data_at_height(
+            slice_x_u, self.height, "Displacement_Z", tolerance=0.05
+        )
+        
+        plt.figure(figsize=(10, 6))
+        plt.plot(disp_points[:, 1], disp_values, 'r-', linewidth=2, label='Z-Displacement')
+        plt.xlabel('Y Coordinate (m)')
+        plt.ylabel('Z-Displacement (m)')
+        plt.title('Foundation Heave (Z-Displacement) at ground (Slice x=2.0)')
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(f'{output_dir}/displacement_curve.png', dpi=300, bbox_inches='tight')
+        plt.close()
+
+    def _extract_data_at_height(self, slice_mesh, target_z, data_field, tolerance=0.05):
+        """从切片网格中提取特定高度处的数据"""
+        points, values = [], []
+        
+        for i in range(slice_mesh.n_points):
+            point = slice_mesh.points[i]
+            value = slice_mesh.point_data[data_field][i]
+            if abs(point[2] - target_z) < tolerance:
+                points.append(point)
+                values.append(value)
+        
+        # 按y坐标排序
+        sorted_indices = np.argsort([p[1] for p in points])
+        return np.array([points[i] for i in sorted_indices]), np.array([values[i] for i in sorted_indices])
+
+
 def read_initial_displacement(h5_filename, msh):
     """从HDF5文件读取初始位移场"""
-    print("读取初始位移场...")
-    
     with h5py.File(h5_filename, 'r') as h5f:
-        # 读取位移数据
         displacement_data = h5f['/Function/f/0'][:]
     
-    print(f"位移数据形状: {displacement_data.shape}")
-    
-    # 检查数据是否与网格匹配
-    num_nodes = msh.geometry.x.shape[0]
-    if displacement_data.shape[0] != num_nodes:
-        print(f"警告: 位移数据节点数 ({displacement_data.shape[0]}) 与网格节点数 ({num_nodes}) 不匹配!")
+    if displacement_data.shape[0] != msh.geometry.x.shape[0]:
+        print(f"警告: 位移数据节点数 ({displacement_data.shape[0]}) 与网格节点数 ({msh.geometry.x.shape[0]}) 不匹配!")
         return None
     
     return displacement_data
 
-# 主程序
-if __name__ == "__main__":
+
+def main():
     comm = MPI.COMM_WORLD
     
-    # 1. 读取网格
+    # 读取网格
     print("读取网格...")
     msh, cell_markers, facet_markers = gmshio.read_from_msh(
         "GroutingSimulation/results/MeshCreate/foundation_drilling_model.msh", 
@@ -409,7 +449,7 @@ if __name__ == "__main__":
     print(f"网格导入: {msh.topology.index_map(3).size_local} 个单元")
     print(f"单元标记: {np.unique(cell_markers.values)}")
     
-    # 2. 读取初始位移场（钻孔模拟结果）
+    # 读取初始位移场
     h5_filename = "GroutingSimulation/results/drilling_simulation/final_displacement.h5"
     initial_displacement = None
     
@@ -418,223 +458,15 @@ if __name__ == "__main__":
     else:
         print(f"警告: 初始位移场文件 {h5_filename} 不存在，将使用零位移初始条件")
     
-    # 3. 初始化灌浆模拟
+    # 初始化并运行灌浆模拟
     grouting_sim = GroutingSimulation(
-        msh, 
-        cell_markers, 
-        facet_markers, 
+        msh, cell_markers, facet_markers, 
         initial_displacement=initial_displacement,
         grout_density=1800
     )
     
-    # 4. 运行灌浆模拟
-    grouting_sim.run_grouting_simulation()
-    grouting_sim.u_increment.x.array[:] = grouting_sim.u.x.array[:] - grouting_sim.u_initial.x.array[:]
+    grouting_sim.run_simulation()
 
-import pyvista
-    # 创建切片可视化
-if comm.rank == 0:
-    try:
-        print("\n创建切片可视化...")
-        # 创建PyVista网格
-        topology, cell_types, geometry = plot.vtk_mesh(grouting_sim.V_u)
-        grid = pyvista.UnstructuredGrid(topology, cell_types, geometry)
-        
-        displacement = grouting_sim.u_increment.x.array.reshape(geometry.shape[0], 3)
-        grid.point_data["Displacement"] = displacement
-        grid.point_data["Displacement_X"] = displacement[:, 0]
-        grid.point_data["Displacement_Y"] = displacement[:, 1]
-        grid.point_data["Displacement_Z"] = displacement[:, 2]
-        
-        # 在x=2处创建切片
-        slice_x = grid.slice(normal='x', origin=[2.0, 0, 0])
-        
-        # 创建绘图器
-        plotter = pyvista.Plotter(off_screen=True)
-        plotter.window_size = [1200, 900]
-        
-        # 添加切片
-        plotter.add_mesh(slice_x, scalars="Displacement_Z", cmap="rainbow", 
-                        show_scalar_bar=True, clim=[np.min(displacement[:, 2]), np.max(displacement[:, 2])])
-        
-        # 添加标题和坐标轴
-        plotter.add_title(f"Final Displacement Field - Slice at x=2.0")
-        plotter.add_axes()
-        
-        # 设置视角 - 从x轴正方向观察
-        plotter.view_vector((1, 0, 0))
-        plotter.camera.zoom(1.5)
 
-        # 保存图像
-        plotter.screenshot(f"GroutingSimulation/results/grouting_simulation/displacement_slice_x2.png")
-        plotter.close()
-        
-        print(f"切片可视化已保存: GroutingSimulation/results/grouting_simulation/displacement_slice_x2.png")
-        
-        # 创建第二个切片在y=2处
-        slice_y = grid.slice(normal='y', origin=[0, 2.0, 0])
-        
-        plotter2 = pyvista.Plotter(off_screen=True)
-        plotter2.window_size = [1200, 900]
-        
-        plotter2.add_mesh(slice_y, scalars="Displacement_Z", cmap="rainbow",
-                         show_scalar_bar=True, clim=[np.min(displacement[:, 2]), np.max(displacement[:, 2])])
-        
-        plotter2.add_title(f"Final Displacement Field - Slice at y=2.0")
-        plotter2.add_axes()
-        
-        # 设置视角 - 从x轴正方向观察
-        plotter2.view_vector((0, 1, 0))
-        plotter2.camera.zoom(1.5)
-
-        plotter2.screenshot(f"GroutingSimulation/results/grouting_simulation/displacement_slice_y2.png")
-        plotter2.close()
-        
-        print(f"切片可视化已保存: GroutingSimulation/results/grouting_simulation/displacement_slice_y2.png")
-        
-    except Exception as e:
-        print(f"切片可视化失败: {e}")
-
-if comm.rank == 0:
-    try:
-        print("\n创建切片可视化...")
-        # 创建PyVista网格
-        topology, cell_types, geometry = plot.vtk_mesh(grouting_sim.V_p)
-        grid = pyvista.UnstructuredGrid(topology, cell_types, geometry)
-        
-        # 获取压力数据
-        pressure_data = grouting_sim.p.x.array[:]
-        
-        # 将压力数据添加到网格
-        grid.point_data["Pressure"] = pressure_data
-        
-        # 在x=2处创建切片
-        slice_x = grid.slice(normal='x', origin=[2.0, 0, 0])
-        
-        # 创建绘图器
-        plotter3 = pyvista.Plotter(off_screen=True)
-        plotter3.window_size = [1200, 900]
-        
-        # 添加切片
-        plotter3.add_mesh(slice_x, scalars="Pressure", cmap="rainbow", 
-                        show_scalar_bar=True, clim=[np.min(pressure_data), np.max(pressure_data)])
-        
-        # 添加标题和坐标轴
-        plotter3.add_title(f"Final Pressure Field - Slice at x=2.0")
-        plotter3.add_axes()
-        
-        # 设置视角 - 从x轴正方向观察
-        plotter3.view_vector((1, 0, 0))
-        plotter3.camera.zoom(1.5)
-
-        # 保存图像
-        plotter3.screenshot(f"GroutingSimulation/results/grouting_simulation/Pressure.png")
-        plotter3.close()
-        
-        print(f"切片可视化已保存: GroutingSimulation/results/grouting_simulation/Pressure.png")
-    except Exception as e:
-        print(f"可视化创建失败: {e}")
-# 添加可视化代码 - 绘制x=2切片面上的压力变化和位移曲线
-if comm.rank == 0:
-    try:
-        print("\n创建压力变化曲线和位移曲线...")
-        
-        # 创建位移场的PyVista网格
-        topology_u, cell_types_u, geometry_u = plot.vtk_mesh(grouting_sim.V_u)
-        grid_u = pyvista.UnstructuredGrid(topology_u, cell_types_u, geometry_u)
-        
-        # 获取位移数据
-        displacement = grouting_sim.u_increment.x.array.reshape(geometry_u.shape[0], 3)
-        grid_u.point_data["Displacement"] = displacement
-        grid_u.point_data["Displacement_Z"] = displacement[:, 2]
-        
-        # 创建压力场的PyVista网格
-        topology_p, cell_types_p, geometry_p = plot.vtk_mesh(grouting_sim.V_p)
-        grid_p = pyvista.UnstructuredGrid(topology_p, cell_types_p, geometry_p)
-        
-        # 获取压力数据
-        pressure_data = grouting_sim.p.x.array[:]
-        grid_p.point_data["Pressure"] = pressure_data
-        
-        # 在x=2处创建切片
-        slice_x_u = grid_u.slice(normal='x', origin=[2.0, 0, 0])
-        slice_x_p = grid_p.slice(normal='x', origin=[2.0, 0, 0])
-        
-        # 图1: 中间注浆孔高度处的压力变化曲线 (沿着y方向)
-        print("绘制某注浆孔高度处的压力变化曲线...")
-        
-        # 从切片中提取某注浆孔附近的点
-        tolerance = 0.05  # 容差范围
-        points_z3 = []
-        pressures_z3 = []
-        
-        for i in range(slice_x_p.n_points):
-            point = slice_x_p.points[i]
-            pressure = slice_x_p.point_data["Pressure"][i]
-            # 筛选z坐标在±tolerance范围内的点
-            if abs(point[2] - (grouting_sim.height-grouting_sim.depth+0.8)) < tolerance:
-                points_z3.append(point)
-                pressures_z3.append(pressure)
-        
-        # 按y坐标排序
-        sorted_indices = np.argsort([p[1] for p in points_z3])
-        y_coords = np.array([points_z3[i][1] for i in sorted_indices])
-        pressures_sorted = np.array([pressures_z3[i] for i in sorted_indices]) / 1000.0 # 转换为kPa
-        
-        # 绘制压力变化曲线
-        plt.figure(figsize=(10, 6))
-        plt.plot(y_coords, pressures_sorted, 'b-', linewidth=2, label='Pressure at red line')
-        plt.xlabel('Y Coordinate (m)')
-        plt.ylabel('Pressure (kPa)')
-        plt.title('Pressure Variation at red line (Slice x=2.0)')
-        plt.grid(True, alpha=0.3)
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig('GroutingSimulation/results/grouting_simulation/pressure_z3_curve.png', dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        print(f"压力变化曲线已保存: GroutingSimulation/results/grouting_simulation/pressure_z3_curve.png")
-        
-        # 图2: 地面高度处的地基隆起位移曲线 (沿着y方向)
-        print("绘制地面高度处的地基隆起位移曲线...")
-        
-        # 从位移切片中提取地面附近的点
-        points_z4 = []
-        displacements_z4 = []
-        
-        for i in range(slice_x_u.n_points):
-            point = slice_x_u.points[i]
-            displacement_z = slice_x_u.point_data["Displacement_Z"][i]
-            # 筛选z坐标在地面±tolerance范围内的点
-            if abs(point[2] - grouting_sim.height) < tolerance:
-                points_z4.append(point)
-                displacements_z4.append(displacement_z)
-        
-        # 按y坐标排序
-        sorted_indices_z4 = np.argsort([p[1] for p in points_z4])
-        y_coords_z4 = np.array([points_z4[i][1] for i in sorted_indices_z4])
-        displacements_sorted = np.array([displacements_z4[i] for i in sorted_indices_z4])
-        
-        # 绘制位移曲线
-        plt.figure(figsize=(10, 6))
-        plt.plot(y_coords_z4, displacements_sorted, 'r-', linewidth=2, label='Z-Displacement at ground')
-        plt.xlabel('Y Coordinate (m)')
-        plt.ylabel('Z-Displacement (m)')
-        plt.title('Foundation Heave (Z-Displacement) at ground (Slice x=2.0)')
-        plt.grid(True, alpha=0.3)
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig('GroutingSimulation/results/grouting_simulation/displacement_z4_curve.png', dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        print(f"位移曲线已保存: GroutingSimulation/results/grouting_simulation/displacement_z4_curve.png")
-        
-        # 打印统计信息
-        print(f"\n曲线数据统计:")
-        print(f"z=3压力曲线: y范围 [{y_coords.min():.3f}, {y_coords.max():.3f}] m, 压力范围 [{pressures_sorted.min():.1f}, {pressures_sorted.max():.1f}] kPa")
-        print(f"z=4位移曲线: y范围 [{y_coords_z4.min():.3f}, {y_coords_z4.max():.3f}] m, 位移范围 [{displacements_sorted.min():.6f}, {displacements_sorted.max():.6f}] m")
-        
-    except Exception as e:
-        print(f"曲线绘制失败: {e}")
-        import traceback
-        traceback.print_exc()
+if __name__ == "__main__":
+    main()
