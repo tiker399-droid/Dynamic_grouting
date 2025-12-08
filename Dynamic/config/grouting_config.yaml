@@ -1,0 +1,153 @@
+# config.yaml
+# 多物理场耦合注浆模拟配置文件
+# 基于Acta Geotechnica (2023) 18:553-571
+# 生成时间: 2024-01-15
+
+# ========== 模拟控制参数 ==========
+simulation:
+  # 时间参数
+  total_time: 7200.0              # 总模拟时间 (s) = 2小时
+  dt_initial: 1.0                 # 初始时间步长 (s)
+  dt_min: 0.1                     # 最小时间步长 (s)
+  dt_max: 60.0                    # 最大时间步长 (s)
+  
+  # 输出控制
+  save_frequency: 10              # 保存频率（每10步保存一次）
+  monitor_frequency: 5            # 监控频率（每5步记录监控点）
+  
+  # 收敛控制
+  nonlinear_tolerance: 1.0e-8     # 非线性求解容差
+  linear_tolerance: 1.0e-10       # 线性求解容差
+  max_newton_iterations: 50       # 最大牛顿迭代次数
+  max_linear_iterations: 2000     # 最大线性迭代次数
+
+# ========== 材料参数 ==========
+materials:
+  # 土壤参数（参考文献表2）
+  soil:
+    # 力学参数
+    E: 20.0e6                     # 杨氏模量 (Pa) = 20 MPa
+    nu: 0.3                       # 泊松比
+    
+    # 渗流参数
+    phi0: 0.45                    # 初始孔隙度
+    k0: 1.0e-12                   # 参考渗透率 (m²)
+    lambda_f: 0.75                # 过滤系数
+    
+    # 密度参数
+    rho_s: 2700.0                 # 土壤颗粒密度 (kg/m³)
+
+  # 浆液参数
+  grout:
+    # 基础参数
+    rho_g: 1800.0                 # 浆液密度 (kg/m³)
+    mu_g0: 0.01                   # 初始粘度 (Pa·s) = 10 mPa·s
+    
+    # 硬化参数
+    xi: 1.56                      # 粘度硬化速率常数
+    hardening_model: "exponential"  # 硬化模型: exponential/linear
+    
+    # 过滤参数
+    filter_coefficient: 0.75      # 过滤系数
+
+  # 水参数
+  water:
+    rho_w: 1000.0                 # 水密度 (kg/m³)
+    mu_w: 0.001                   # 水粘度 (Pa·s) = 1 mPa·s
+
+# ========== 边界条件参数 ==========
+boundary_conditions:
+  # 注浆压力施加
+  grouting:
+    pressure_type: "ramp_hold"    # 压力施加类型: ramp_hold/constant/cyclic
+    p_max: 3.8e5                  # 最大注浆压力 (Pa) = 380 kPa
+    ramp_time: 60.0               # 压力上升时间 (s)
+    hold_time: 600.0              # 压力保持时间 (s)
+    
+    # 注浆孔位置（根据网格标记）
+    injection_holes: [101]        # 注浆孔边界标记列表
+    injection_depth: 3.0          # 注浆深度 (m)
+    concentration: 1.0            # 注浆浓度（纯浆液）
+
+  # 排水边界
+  drainage:
+    top_markers: [107]            # 顶部排水边界标记
+    pressure: 0.0                 # 排水压力（大气压）
+
+  # 位移边界
+  displacement:
+    fixed_bottom: true            # 底部是否固定
+    bottom_markers: [108]         # 底部固定边界标记
+    constrain_sides: true         # 是否约束侧面
+    side_markers: [103, 104, 105, 106]  # 侧面约束标记
+
+# ========== 数值求解器参数 ==========
+solver:
+  # 非线性求解器（牛顿法）
+  nonlinear:
+    type: "newton"                # 求解器类型: newton/picard
+    relaxation: 1.0               # 松弛参数
+    line_search: false            # 是否使用线搜索
+    max_iterations: 50            # 最大迭代次数
+    
+  # 线性求解器
+  linear:
+    type: "gmres"                 # 求解器类型: gmres/cg/bicgstab
+    preconditioner: "hypre"       # 预条件子: hypre/ilu/amg
+    hypre_type: "boomeramg"       # hypre算法: boomeramg/parasails
+    tolerance: 1.0e-10            # 线性求解容差
+    max_iterations: 2000          # 最大迭代次数
+    
+  # 时间离散
+  time_integration:
+    scheme: "backward_euler"      # 时间离散格式: backward_euler/crank_nicolson
+    adaptive: true                # 是否自适应时间步长
+    safety_factor: 0.8            # 自适应安全系数
+
+# ========== 输出参数 ==========
+output:
+  # 文件格式
+  format: "xdmf"                  # 输出格式: xdmf/vtk/hdf5
+  compression: 3                  # 压缩级别 (0-9)
+  
+  # 输出字段
+  fields:                         # 需要输出的场变量列表
+    - displacement                # 位移场
+    - pressure                    # 压力场
+    - porosity                    # 孔隙度场
+    - concentration               # 浓度场
+    - darcy_velocity              # 达西流速场
+  
+  # 监控点（用于绘制时间序列）
+  monitoring_points:
+    - name: "ground_surface_center"
+      coordinates: [2.0, 2.0, 13.0]  # 地面中心点
+      variables: ["displacement_z", "pressure"]
+    
+    - name: "grout_hole_top"
+      coordinates: [0.0, 0.0, 10.0]  # 注浆孔顶部
+      variables: ["pressure", "concentration"]
+    
+    - name: "far_field"
+      coordinates: [10.0, 10.0, 6.5]  # 远场点
+      variables: ["pressure", "porosity"]
+  
+  # 切片位置（用于可视化）
+  slices:
+    - name: "x_slice"
+      normal: "x"                 # 法线方向
+      position: 2.0               # 切片位置
+      
+    - name: "y_slice"
+      normal: "y"
+      position: 2.0
+      
+    - name: "z_slice"
+      normal: "z"
+      position: 6.5
+
+# ========== 物理常数 ==========
+constants:
+  gravity: [0.0, 0.0, -9.81]      # 重力加速度 (m/s²)
+  atmospheric_pressure: 101325.0  # 大气压力 (Pa)
+  water_table: 13.0               # 地下水位高度 (m)

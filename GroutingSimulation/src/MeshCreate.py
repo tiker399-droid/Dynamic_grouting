@@ -22,10 +22,10 @@ def create_foundation_with_drill_hole():
     gmsh.model.add("foundation_drilling")
     
     # 参数设置
-    foundation_size= 4.0   # 长宽 4 m
-    foundation_height = 14.0  # z 方向
-    hole_diameter = 0.08   # 钻孔直径 8 cm
-    hole_depth = 10.0       # 钻孔深度 10 m
+    foundation_size= 4.0      # 长宽 4 m
+    foundation_height = 13.0  # z 方向
+    hole_diameter = 0.1       # 钻孔直径 10 cm
+    hole_depth = 10.0         # 钻孔深度 10 m
     hole_radius = hole_diameter / 2
     
     # 设置网格尺寸
