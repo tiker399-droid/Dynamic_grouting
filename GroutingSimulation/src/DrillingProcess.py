@@ -18,7 +18,7 @@ print(f"Cell markers: {np.unique(cell_markers.values)}")
 # 材料参数
 E = 20e6  # Young's modulus
 nu = 0.3   # Poisson's ratio
-rhos_sat = 2700  # Soil density
+rhos_sat = 2020  # Soil density
 rho_w = 1000  # Water density
 g = 9.81  # Gravitational acceleration
 gamma_sat = rhos_sat * g  # Saturated unit weight
@@ -388,7 +388,11 @@ if comm.rank == 0:
         plotter2.window_size = [1200, 900]
         
         plotter2.add_mesh(slice_, scalars="Displacement_Z2", cmap="coolwarm",
-                         show_scalar_bar=True, clim=[0, np.max(displacement_change[:, 2])])
+                         show_scalar_bar=True, clim=[0, np.max(displacement_change[:, 2])], scalar_bar_args={
+                     'title': 'Displacement(m)',
+                     'vertical': True,
+                     # 设置自定义刻度和标签
+                 })
         
         plotter2.add_title(f"Displacement change Field - Slice at x=2.0")
         plotter2.add_axes()

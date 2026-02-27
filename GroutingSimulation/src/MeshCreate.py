@@ -291,29 +291,37 @@ def visualize_with_pyvista(msh, cell_markers, facet_markers):
         
         grid.cell_data["Colors"] = colors
     
+    slice_x = grid.slice(normal='x', origin=[2.0, 0, 0])
     # 创建绘图器
-    plotter = pv.Plotter()
+    plotter = pv.Plotter(off_screen=True, window_size=[1200, 900])
     
     # 添加体积网格
     if cell_markers is not None:
         # 使用自定义颜色映射
         cmap = ["yellow", "lightblue"]  # 索引0:黄色, 索引1:淡蓝色
-        plotter.add_mesh(grid, scalars='Colors', show_edges=True, 
-                        cmap=cmap, opacity=1.0, clim=[1, 2])
+        plotter.add_mesh(slice_x, scalars='Colors', show_edges=False,
+                 cmap=cmap, opacity=1.0, clim=[1, 2],
+                 scalar_bar_args={
+                     'title': 'Cell Markers',
+                     'n_labels': 2,           # 只显示两个标签
+                     'vertical': True,
+                     # 设置自定义刻度和标签
+                 })
     else:
         plotter.add_mesh(grid, color="lightblue", show_edges=False, opacity=0.8)
     
     # 设置相机位置和视角
-    plotter.camera_position = 'iso'
-    plotter.camera.azimuth = 30
-    plotter.camera.elevation = 30
+    #plotter.camera_position = 'iso'
+    #plotter.camera.azimuth = 30
+    #plotter.camera.elevation = 30
     
     # 添加坐标轴
     plotter.add_axes()
-    
+    plotter.view_vector((1, 0, 0))
+    plotter.camera.zoom(1.5)
     # 添加标题
-    plotter.add_title("Foundation with Drill Hole")
-    
+    # plotter.add_title("Foundation with Drill Hole")
+    plotter.screenshot(f"GroutingSimulation/results/MeshCreate")
     # 显示绘图
     plotter.show()
     
@@ -352,7 +360,7 @@ def print_boundary_info(facet_markers):
 if __name__ == "__main__":
     try:
         # 尝试创建完整模型
-        create_foundation_with_drill_hole()
+        # create_foundation_with_drill_hole()
         
         # 导入网格到FEniCSx
         msh, cell_markers, facet_markers = import_mesh_to_fenicsx()

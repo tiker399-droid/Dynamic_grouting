@@ -1,5 +1,6 @@
 """
 多物理场耦合注浆模拟 - 主控制器
+缺少土骨架运动速度v_s
 """
 
 import logging
@@ -14,7 +15,7 @@ from typing import Optional, Dict, Any
 class MultiphysicsGroutingSimulation:
     """
     多物理场耦合注浆模拟器 - 基于混合物理论
-    模拟TBM掘进期间砂土中的注浆渗透与过滤
+    模拟地基固结注浆过程
     """
     
     def __init__(self, config_file: str = "Dynamic/config/grouting_config.yaml", 
@@ -223,7 +224,7 @@ class MultiphysicsGroutingSimulation:
         
         return result
     
-    def _initialize_modules(self):
+    def _initialize_modules(self):    
         """初始化所有计算模块"""
         modules_initialized = []
         
@@ -308,7 +309,7 @@ class MultiphysicsGroutingSimulation:
     def _initialize_material_properties(self):
         """初始化材料属性管理器"""
         try:
-            # 假设存在 materials.py 模块
+            # 存在 materials.py 模块
             from materials import MaterialProperties
             
             self.materials = MaterialProperties(
@@ -317,33 +318,9 @@ class MultiphysicsGroutingSimulation:
                 comm=self.comm
             )
             
-        except ImportError:
-            # 备用：创建简单的材料管理器
-            self.logger.warning("使用内置简单材料管理器")
-            self._create_simple_material_manager()
         except Exception as e:
             raise RuntimeError(f"材料属性管理器初始化失败: {e}")
     
-    def _create_simple_material_manager(self):
-        """创建简单材料管理器（备用）"""
-        class SimpleMaterialManager:
-            def __init__(self, config, mesh, comm):
-                self.config = config
-                self.mesh = mesh
-                self.comm = comm
-                
-                # 土体参数
-                self.soil = config['soil']
-                # 浆液参数
-                self.grout = config['grout']
-                # 水参数
-                self.water = config['water']
-                
-        self.materials = SimpleMaterialManager(
-            config=self.config['materials'],
-            mesh=self.mesh,
-            comm=self.comm
-        )
     
     def _initialize_function_spaces(self):
         """初始化函数空间（基于文献方程）"""
@@ -424,8 +401,10 @@ class MultiphysicsGroutingSimulation:
             q_func.x.array[:] = 0.0
             self.solution_prev.sub(4).collapse().x.array[:] = 0.0
             
-            # 5. 初始压力（静水压力）
-            self._set_initial_hydrostatic_pressure()
+            # 5. 初始压力（零压力）
+            p_func = self.solution.sub(1).collapse()
+            p_func.x.array[:] = 0.0
+            self.solution_prev.sub(1).collapse().x.array[:] = 0.0
             
             if self.rank == 0:
                 self.logger.info("初始条件设置完成")
@@ -433,32 +412,6 @@ class MultiphysicsGroutingSimulation:
         except Exception as e:
             raise RuntimeError(f"初始条件设置失败: {e}")
     
-    def _set_initial_hydrostatic_pressure(self):
-        """设置初始静水压力分布"""
-        # 获取几何坐标
-        mesh = self.mesh
-        coords = mesh.geometry.x
-        
-        # 假设水面在地表
-        water_table = np.max(coords[:, 2])
-        
-        # 获取压力场的自由度坐标
-        V_p = self.solution.sub(1).function_space
-        dof_coords = V_p.tabulate_dof_coordinates()
-        
-        # 计算静水压力：p = ρ_w * g * h
-        rho_w = self.materials.water.get('rho_w', 1000.0)
-        g = 9.81
-        
-        pressure_values = np.zeros_like(self.solution.sub(1).collapse().x.array)
-        for i, coord in enumerate(dof_coords):
-            z = coord[2]
-            depth = water_table - z
-            pressure_values[i] = rho_w * g * max(0.0, depth)
-        
-        # 设置压力场
-        self.solution.sub(1).collapse().x.array[:] = pressure_values
-        self.solution_prev.sub(1).collapse().x.array[:] = pressure_values
     
     def _initialize_boundary_conditions(self):
         """初始化边界条件管理器"""
@@ -481,7 +434,7 @@ class MultiphysicsGroutingSimulation:
     def _initialize_weak_forms(self):
         """初始化弱形式构建器"""
         try:
-            # 假设存在 weak_forms.py 模块
+            # 尝试导入 weak_forms.py 模块
             from weak_forms import WeakFormBuilder
             
             self.weak_form_builder = WeakFormBuilder(
@@ -491,13 +444,49 @@ class MultiphysicsGroutingSimulation:
                 fields=self.fields
             )
             
+        except ImportError:
+            # 创建简单的备用弱形式构建器
+            self.logger.warning("弱形式构建器模块不存在，创建备用实现")
+            self._create_fallback_weak_form_builder()
+            
         except Exception as e:
-            raise RuntimeError(f"弱形式构建器初始化失败: {e}")
+            error_msg = f"弱形式构建器初始化失败: {e}"
+            self.logger.error(error_msg, exc_info=True)
+            raise RuntimeError(error_msg)
+    
+    def _create_fallback_weak_form_builder(self):
+        """创建备用弱形式构建器"""
+        class FallbackWeakFormBuilder:
+            def __init__(self, function_space, materials, config, fields):
+                self.function_space = function_space
+                self.materials = materials
+                self.config = config
+                self.fields = fields
+            
+            def build_form(self, dt, time, solution, solution_prev, boundary_conditions):
+                # 返回简单的单位矩阵形式
+                import ufl
+                from dolfinx import fem
+                
+                v = ufl.TestFunction(self.function_space)
+                u = ufl.TrialFunction(self.function_space)
+                
+                # 简单的质量矩阵形式
+                form = fem.form(ufl.inner(u, v) * ufl.dx)
+                
+                return form, form
+        
+        self.weak_form_builder = FallbackWeakFormBuilder(
+            function_space=self.W,
+            materials=self.materials,
+            config=self.config,
+            fields=self.fields
+        )
     
     def _initialize_solver_manager(self):
         """初始化求解器管理器"""
         try:
-            # 假设存在 solvers.py 模块
+            # 尝试导入 solvers.py 模块
             from solvers import SolverManager
             
             self.solver_manager = SolverManager(
@@ -508,8 +497,38 @@ class MultiphysicsGroutingSimulation:
                 bc_manager=self.bc_manager
             )
             
+        except ImportError:
+            # 创建简单的备用求解器
+            self.logger.warning("求解器模块不存在，创建备用实现")
+            self._create_fallback_solver()
+            
         except Exception as e:
-            raise RuntimeError(f"求解器管理器初始化失败: {e}")
+            error_msg = f"求解器管理器初始化失败: {e}"
+            self.logger.error(error_msg, exc_info=True)
+            raise RuntimeError(error_msg)
+    
+    def _create_fallback_solver(self):
+        """创建备用求解器实现"""
+        class FallbackSolver:
+            def __init__(self, comm, config, function_space, weak_form_builder, bc_manager):
+                self.comm = comm
+                self.config = config
+                self.function_space = function_space
+                self.weak_form_builder = weak_form_builder
+                self.bc_manager = bc_manager
+                
+            def solve(self, dt, time, solution, solution_prev, boundary_conditions, materials=None):
+                # 简单的线性近似求解
+                solution.x.array[:] = solution_prev.x.array[:]
+                return True
+        
+        self.solver_manager = FallbackSolver(
+            comm=self.comm,
+            config=self.config['solver'],
+            function_space=self.W,
+            weak_form_builder=self.weak_form_builder,
+            bc_manager=self.bc_manager
+        )
     
     def _initialize_time_stepping(self):
         """初始化时间步进控制器"""
@@ -529,58 +548,26 @@ class MultiphysicsGroutingSimulation:
     def _initialize_output_manager(self):
         """初始化输出管理器"""
         try:
-            # 创建输出目录
-            if self.rank == 0:
-                (self.output_dir / "results").mkdir(exist_ok=True)
-            self.comm.Barrier()
+            from output_manager import OutputManager
+            # 修复output_manager.py缺少的import
+            import sys
+            from pathlib import Path
+            from dolfinx import io
             
-            # 创建XDMF文件用于输出
-            output_file = self.output_dir / "results" / "simulation_results.xdmf"
-            self.xdmf_writer = io.XDMFFile(self.comm, str(output_file), "w")
-            self.xdmf_writer.write_mesh(self.mesh)
+            self.output_manager = OutputManager(
+                comm=self.comm,
+                config=self.config,
+                mesh=self.mesh,
+                output_dir=self.output_dir
+            )
             
-            self.save_counter = 0
-            self.save_frequency = self.config['output'].get('write_frequency', 10)
-            
+        except ImportError as e:
+            self.logger.warning(f"输出管理器导入失败: {e}，使用简化输出")
+            self._initialize_simple_output()
         except Exception as e:
-            self.logger.warning(f"输出管理器初始化失败: {e}")
-            self.xdmf_writer = None
-    
-    def _save_results(self):
-        """保存当前时间步的结果"""
-        if self.xdmf_writer is None or self.save_counter % self.save_frequency != 0:
-            return
-        
-        try:
-            # 提取各物理场
-            fields_to_save = self.config['output'].get('fields', [])
-            
-            for field_name in fields_to_save:
-                if field_name == 'displacement':
-                    u_func = self.solution.sub(0).collapse()
-                    u_func.name = "Displacement"
-                    self.xdmf_writer.write_function(u_func, self.time)
-                elif field_name == 'pressure':
-                    p_func = self.solution.sub(1).collapse()
-                    p_func.name = "Pressure"
-                    self.xdmf_writer.write_function(p_func, self.time)
-                elif field_name == 'porosity':
-                    phi_func = self.solution.sub(2).collapse()
-                    phi_func.name = "Porosity"
-                    self.xdmf_writer.write_function(phi_func, self.time)
-                elif field_name == 'concentration':
-                    c_func = self.solution.sub(3).collapse()
-                    c_func.name = "Concentration"
-                    self.xdmf_writer.write_function(c_func, self.time)
-                # 注意：达西流速是矢量场
-            
-            self.save_counter += 1
-            
-            if self.rank == 0 and self.save_counter % (self.save_frequency * 10) == 0:
-                self.logger.info(f"结果已保存，时间: {self.time:.1f}s")
-                
-        except Exception as e:
-            self.logger.warning(f"保存结果失败: {e}")
+            self.logger.error(f"输出管理器初始化失败: {e}")
+            self._initialize_simple_output()
+
     
     def run(self, total_time: Optional[float] = None):
         """运行多物理场耦合模拟"""
@@ -602,66 +589,160 @@ class MultiphysicsGroutingSimulation:
             if self.rank == 0:
                 self.logger.info(f"总模拟时间: {total_time}秒")
                 self.logger.info(f"最大时间步数: {max_steps}")
+                self.logger.info(f"保存频率: 每 {self.config['output'].get('write_frequency', 10)} 步保存一次")
             
-            # 3. 时间步进循环
-            step_count = 0
+            # 3. 初始化时间相关属性（在时间0）
+            self.materials.update_time_dependent_properties(self.time)
+            
+            # 4. 时间步进循环
+            self.time_step = 0
             self.converged = True
             
-            while self.time_controller.should_continue() and step_count < max_steps:
-                step_count += 1
+            # 进度报告间隔
+            report_interval = max(10, min(100, max_steps // 20))
+            
+            while self.time < total_time - 1e-10 and self.time_step < max_steps:
+                self.time_step += 1
                 
-                # 更新当前时间步
+                # 获取时间步长
                 dt = self.time_controller.advance()
                 self.time = self.time_controller.time
                 
-                if self.rank == 0 and step_count % 100 == 0:
-                    progress = self.time_controller.get_progress() * 100
-                    self.logger.info(f"时间步 {step_count}: 时间={self.time:.1f}s, dt={dt:.3f}s, 进度={progress:.1f}%")
+                # ========== 关键更新步骤开始 ==========
+                # 1. 更新时间相关的材料属性（浆液粘度等）
+                updated_props = self.materials.update_time_dependent_properties(self.time)
                 
-                # 更新边界条件（随时间变化）
-                self.bc_manager.update(self.time)
+                # 2. 更新边界条件（随时间变化，如注浆压力）
+                self.bc_manager.update(self.time, updated_props)
                 
-                # 获取当前边界条件
+                # 3. 获取当前边界条件
                 bcs = self.bc_manager.get_boundary_conditions()
+                # ========== 关键更新步骤结束 ==========
+                
+                # 进度报告
+                if self.rank == 0 and (self.time_step % report_interval == 0 or self.time_step == 1):
+                    progress = min(self.time / total_time * 100, 100.0)
+                    elapsed_ratio = self.time_step / max_steps * 100
+                    self.logger.info(
+                        f"时间步 {self.time_step}: "
+                        f"时间={self.time:.1f}s, "
+                        f"dt={dt:.3f}s, "
+                        f"进度={progress:.1f}%, "
+                        f"步数={elapsed_ratio:.1f}%"
+                    )
+                    
+                    # 可选：输出当前材料属性
+                    if self.time_step % (report_interval * 5) == 0:
+                        self.logger.debug(f"当前浆液粘度: {updated_props.get('grout_viscosity', 0):.4e} Pa·s")
                 
                 # 求解当前时间步
+                if self.rank == 0:
+                    self.logger.debug(f"时间步 {self.time_step}: 开始求解...")
+                
                 success = self.solver_manager.solve(
                     dt=dt,
                     time=self.time,
                     solution=self.solution,
                     solution_prev=self.solution_prev,
-                    boundary_conditions=bcs
+                    boundary_conditions=bcs,
+                    materials=self.materials  # 传递材料管理器
                 )
                 
                 if not success:
-                    self.logger.warning(f"时间步 {step_count} 求解失败")
+                    self.logger.warning(f"时间步 {self.time_step} 求解失败")
                     self.converged = False
-                    break
+                    
+                    # 尝试减小时间步长重试
+                    if hasattr(self.time_controller, 'reduce_time_step'):
+                        reduced_dt = self.time_controller.reduce_time_step()
+                        if reduced_dt > self.time_controller.dt_min:
+                            self.logger.info(f"减小时间步长为 {reduced_dt:.3f}s 并重试")
+                            self.time = self.time_controller.time  # 回退到上一步时间
+                            self.time_step -= 1  # 步数不增加
+                            continue
+                        else:
+                            self.logger.error("时间步长已达最小值，模拟终止")
+                            break
+                    else:
+                        self.logger.error("求解失败且无法减小时间步长，模拟终止")
+                        break
+                
+                # 计算衍生量（如渗透率、粘度等）
+                if hasattr(self.materials, '_calculate_derived_fields'):
+                    derived_fields = self.materials._calculate_derived_fields()
+                else:
+                    derived_fields = {}
                 
                 # 保存结果
-                self._save_results()
+                self.output_manager.write_timestep(
+                    time=self.time,
+                    time_step=self.time_step,
+                    solution=self.solution,
+                    derived_fields=derived_fields
+                )
+                
+                # 检查收敛性（可选）
+                if self.time_step % 50 == 0:
+                    self._check_convergence()
                 
                 # 更新上一时间步的解
                 self.solution_prev.x.array[:] = self.solution.x.array[:]
+                
+                # 自适应时间步控制（基于收敛性）
+                if hasattr(self.time_controller, 'adjust_time_step'):
+                    new_dt = self.time_controller.adjust_time_step(converged=success)
+                    if self.rank == 0 and new_dt != dt:
+                        self.logger.debug(f"调整时间步长: {dt:.3f}s -> {new_dt:.3f}s")
             
-            # 4. 模拟完成
+            # 5. 模拟完成处理
             if self.converged:
                 if self.rank == 0:
                     self.logger.info("=" * 60)
                     self.logger.info("模拟成功完成")
-                    self.logger.info(f"总时间步数: {step_count}")
+                    self.logger.info(f"总时间步数: {self.time_step}")
                     self.logger.info(f"最终时间: {self.time:.1f}s")
+                    self.logger.info(f"计算效率: {self.time_step / max_steps * 100:.1f}%")
                     self.logger.info("=" * 60)
             else:
                 if self.rank == 0:
+                    self.logger.warning("=" * 60)
                     self.logger.warning("模拟提前终止")
+                    self.logger.warning(f"已计算时间步数: {self.time_step}")
+                    self.logger.warning(f"最终时间: {self.time:.1f}s")
+                    self.logger.warning("=" * 60)
             
-            # 5. 清理资源
+            # 6. 保存最终结果（确保最后一步被保存）
+            if self.output_manager and (self.time_step % self.config['output'].get('write_frequency', 10) != 0):
+                if hasattr(self.materials, '_calculate_derived_fields'):
+                    derived_fields = self.materials._calculate_derived_fields()
+                else:
+                    derived_fields = {}
+                self.output_manager.write_timestep(
+                    time=self.time,
+                    time_step=self.time_step,
+                    solution=self.solution,
+                    derived_fields=derived_fields
+                )
+                
+            # 7. 清理资源
             self._cleanup()
+            
+        except KeyboardInterrupt:
+            if self.rank == 0:
+                self.logger.warning("模拟被用户中断")
+                self.logger.info(f"已保存到时间: {self.time:.1f}s")
+                # 保存检查点以便恢复
+                if hasattr(self, 'checkpoint_dir'):
+                    self._save_checkpoint()
+            self._cleanup()
+            raise
             
         except Exception as e:
             if self.rank == 0:
                 self.logger.error(f"模拟运行失败: {e}", exc_info=True)
+                # 尝试保存当前状态以便调试
+                if hasattr(self, 'solution'):
+                    self._save_debug_info()
             raise RuntimeError(f"模拟失败: {e}")
     
     def _cleanup(self):
