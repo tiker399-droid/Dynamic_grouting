@@ -21,7 +21,7 @@ class GroutingSimulation:
         # 物理常数
         self.rho_w = 1000    # 水密度 (kg/m³)
         self.g = 9.81        # 重力加速度 (m/s²)
-        self.p_z = 3.8e5     # 注浆压力 (Pa)
+        self.p_z = 4.2e5     # 注浆压力 (Pa)
 
         # 材料参数
         self.E = 20e6        # 杨氏模量 (Pa)
@@ -171,7 +171,7 @@ class GroutingSimulation:
             vertices = facet_to_vertex.links(facet)
             center = np.mean(facet_geom[vertices], axis=0)
             z = center[2]
-            if any(abs(z - depth) < 0.05 for depth in drill_depths):
+            if any(abs(z - depth) < 0.02 for depth in drill_depths):
                 selected_facets.append(facet)
         
         if selected_facets:
@@ -228,7 +228,7 @@ class GroutingSimulation:
         u_test = ufl.TestFunction(self.V_u)
         
         # 体力项
-        soil_density = 2700
+        soil_density = 2020
         f = Constant(self.msh, PETSc.ScalarType((0.0, 0.0, -soil_density * self.g)))
         
         # 变分形式
@@ -326,8 +326,12 @@ class GroutingSimulation:
         # x=2切片
         slice_x = grid.slice(normal='x', origin=[2.0, 0, 0])
         plotter = pyvista.Plotter(off_screen=True, window_size=[1200, 900])
-        plotter.add_mesh(slice_x, scalars="Displacement_Z", cmap="rainbow", show_scalar_bar=True)
-        plotter.add_title("Final Displacement Field - Slice at x=2.0")
+        plotter.add_mesh(slice_x, scalars="Displacement_Z", cmap="rainbow", show_scalar_bar=True, scalar_bar_args={
+                     'title': 'Displacement(m)',
+                     'vertical': True,
+                     # 设置自定义刻度和标签
+                 })
+        #plotter.add_title("Final Displacement Field - Slice at x=2.0")
         plotter.add_axes()
         plotter.view_vector((1, 0, 0))
         plotter.camera.zoom(1.5)
@@ -348,12 +352,16 @@ class GroutingSimulation:
         # 压力场切片
         topology_p, cell_types_p, geometry_p = plot.vtk_mesh(self.V_p)
         grid_p = pyvista.UnstructuredGrid(topology_p, cell_types_p, geometry_p)
-        grid_p.point_data["Pressure"] = self.p.x.array[:]
+        grid_p.point_data["Pressure"] = self.p.x.array[:] / 1000.0
         
         slice_x_p = grid_p.slice(normal='x', origin=[2.0, 0, 0])
         plotter3 = pyvista.Plotter(off_screen=True, window_size=[1200, 900])
-        plotter3.add_mesh(slice_x_p, scalars="Pressure", cmap="rainbow", show_scalar_bar=True)
-        plotter3.add_title("Final Pressure Field - Slice at x=2.0")
+        plotter3.add_mesh(slice_x_p, scalars="Pressure", cmap="rainbow", show_scalar_bar=True, scalar_bar_args={
+                     'title': 'Pressure(kPa)',
+                     'vertical': True,
+                     # 设置自定义刻度和标签
+                 })
+        #plotter3.add_title("Final Pressure Field - Slice at x=2.0")
         plotter3.add_axes()
         plotter3.view_vector((1, 0, 0))
         plotter3.camera.zoom(1.5)
@@ -385,7 +393,7 @@ class GroutingSimulation:
         plt.plot(pressure_points[:, 1], pressure_values / 1000.0, 'b-', linewidth=2, label='Pressure')
         plt.xlabel('Y Coordinate (m)')
         plt.ylabel('Pressure (kPa)')
-        plt.title('Pressure Variation at red line (Slice x=2.0)')
+        #plt.title('Pressure Variation at red line (Slice x=2.0)')
         plt.grid(True, alpha=0.3)
         plt.legend()
         plt.tight_layout()
@@ -401,7 +409,7 @@ class GroutingSimulation:
         plt.plot(disp_points[:, 1], disp_values, 'r-', linewidth=2, label='Z-Displacement')
         plt.xlabel('Y Coordinate (m)')
         plt.ylabel('Z-Displacement (m)')
-        plt.title('Foundation Heave (Z-Displacement) at ground (Slice x=2.0)')
+        #plt.title('Foundation Heave (Z-Displacement) at ground (Slice x=2.0)')
         plt.grid(True, alpha=0.3)
         plt.legend()
         plt.tight_layout()

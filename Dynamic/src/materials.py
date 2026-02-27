@@ -1,188 +1,337 @@
 """
-材料属性管理
-处理随时间变化的材料参数和本构关系
+材料属性管理器 - 简化核心版本
+包含主程序直接需要的功能
 """
 
 import numpy as np
-from typing import Callable
 import ufl
 from dolfinx import fem
-from petsc4py import PETSc
-
+from mpi4py import MPI
+import logging
 
 class MaterialProperties:
-    """
-    管理所有材料属性和本构关系
+    """材料属性管理器 - 核心功能版本"""
     
-    基于文献中的方程：
-    - 粘度硬化: μ_g(t) = μ_g0 * exp(ξt) [Eq. 8]
-    - 混合物粘度: μ = cμ_g + (1-c)μ_w [Eq. 7]
-    - 混合物密度: ρ̄ = cρ_g + (1-c)ρ_w [Eq. 6]
-    - 渗透率: k = k0 * φ³/(1-φ)² [Eq. 5]
-    - 过滤速率: n̂ = λ_f * c * |q_w| [Eq. 9]
-    """
-    
-    def __init__(self, params: Dict):
+    def __init__(self, config, mesh, comm):
         """
-        初始化材料参数
+        初始化材料属性管理器
         
         Args:
-            params: 材料参数字典
+            config: 配置文件字典
+            mesh: 计算网格
+            comm: MPI通信器
         """
-        # 从配置加载参数
-        self._load_parameters(params)
+        # 基础设置
+        self.comm = comm
+        self.rank = comm.Get_rank()
+        self.mesh = mesh
         
-        # 计算拉梅常数
-        self._compute_lame_constants()
+        # 设置日志
+        self.logger = logging.getLogger(f"Materials_rank{self.rank}")
         
-        # 预计算常数
-        self.gravity = np.array([0.0, 0.0, -9.81])
+        # 提取材料参数（从主程序传入的config结构）
+        self._extract_parameters(config)
         
-        logger.info("MaterialProperties initialized")
+        # 初始化常量和基础设置
+        self._initialize_constants()
+        
+        # 输出初始化信息
+        if self.rank == 0:
+            self.logger.info("材料属性管理器初始化完成")
+            self.logger.info(f"初始孔隙度: {self.phi0:.3f}")
+            self.logger.info(f"浆液初始粘度: {self.mu_g0:.4f} Pa·s")
+            self.logger.info(f"过滤系数: {self.lambda_f:.3f}")
     
-    def _load_parameters(self, params: Dict):
-        """加载并验证参数"""
-        # 土壤参数
-        self.E = params['soil']['E']  # 杨氏模量 (Pa)
-        self.nu = params['soil']['nu']  # 泊松比
-        self.phi0 = params['soil']['phi0']  # 初始孔隙度
-        self.k0 = params['soil']['k0']  # 参考渗透率 (m²)
-        self.lambda_f = params['soil']['lambda_f']  # 过滤系数
-        
-        # 浆液参数
-        self.rho_g = params['grout']['rho_g']  # 浆液密度 (kg/m³)
-        self.mu_g0 = params['grout']['mu_g0']  # 初始粘度 (Pa·s)
-        self.xi = params['grout']['xi']  # 硬化速率常数
-        
-        # 水参数
-        self.rho_w = params['water']['rho_w']  # 水密度 (kg/m³)
-        self.mu_w = params['water']['mu_w']  # 水粘度 (Pa·s)
-        
-        # 验证参数
-        self._validate_parameters()
-    
-    def _validate_parameters(self):
-        """验证参数合理性"""
-        assert self.E > 0, "杨氏模量必须为正"
-        assert 0 <= self.nu < 0.5, f"泊松比必须在[0, 0.5)之间: {self.nu}"
-        assert 0 < self.phi0 < 1, f"初始孔隙度必须在(0, 1)之间: {self.phi0}"
-        assert self.k0 > 0, "渗透率必须为正"
-        assert self.lambda_f >= 0, "过滤系数必须非负"
-        assert self.mu_g0 > 0, "浆液粘度必须为正"
-        assert self.xi >= 0, "硬化速率常数必须非负"
-    
-    def _compute_lame_constants(self):
-        """计算拉梅常数"""
-        self.lambda_lame = self.E * self.nu / ((1 + self.nu) * (1 - 2 * self.nu))
-        self.mu_lame = self.E / (2 * (1 + self.nu))
-        
-        logger.debug(f"Lame constants: λ={self.lambda_lame:.2e}, μ={self.mu_lame:.2e}")
-    
-    def grout_viscosity(self, t: float) -> float:
+    def _extract_parameters(self, config):
         """
-        浆液粘度随时间硬化 [Eq. 8]
+        从配置字典中提取材料参数
+        
+        注意：假设config结构为：
+        config = {
+            'materials': {
+                'soil': {...},
+                'grout': {...},
+                'water': {...}
+            }
+        }
+        """
+        # 获取材料配置部分
+        materials_config = config.get('materials', {})
+        
+        # 提取土壤参数
+        soil_config = materials_config.get('soil', {})
+        self.phi0 = soil_config.get('phi0', 0.40)  # 初始孔隙度
+        self.k0 = soil_config.get('k0', 1e-12)     # 初始渗透率 (m²)
+        
+        # 提取浆液参数
+        grout_config = materials_config.get('grout', {})
+        self.rho_g = grout_config.get('rho_g', 1800.0)     # 浆液密度 (kg/m³)
+        self.mu_g0 = grout_config.get('mu_g0', 0.01)       # 浆液初始粘度 (Pa·s)
+        self.xi = grout_config.get('xi', 1.56)            # 粘度增长常数 (1/s)
+        self.lambda_f = grout_config.get('filtration_coeff', 0.75)  # 过滤系数
+        
+        # 提取水参数
+        water_config = materials_config.get('water', {})
+        self.rho_w = water_config.get('rho_w', 1000.0)     # 水密度 (kg/m³)
+        self.mu_w = water_config.get('mu_w', 0.001)        # 水粘度 (Pa·s)
+        
+        # 存储完整配置以供参考
+        self.soil_config = soil_config
+        self.grout_config = grout_config
+        self.water_config = water_config
+    
+    def _initialize_constants(self):
+        """初始化常量和基础设置"""
+        # 重力加速度向量 (m/s²)，假设z方向向下
+        self.g_vector = np.array([0.0, 0.0, -9.81])
+        
+        # 创建FEniCS常数对象
+        self.g = fem.Constant(self.mesh, self.g_vector)  # 重力向量
+        
+        # 创建材料常数（用于弱形式）
+        self.k0_constant = fem.Constant(self.mesh, self.k0)
+        self.mu_g0_constant = fem.Constant(self.mesh, self.mu_g0)
+        self.lambda_f_constant = fem.Constant(self.mesh, self.lambda_f)
+        
+        # 当前时间和粘度缓存（用于性能优化）
+        self._current_time = 0.0
+        self._current_mu_g = self.mu_g0
+    
+    def update_time_dependent_properties(self, time):
+        """
+        更新时间相关的材料属性
         
         Args:
-            t: 时间 (s)
-        
+            time: 当前时间 (秒)
+            
         Returns:
-            浆液粘度 (Pa·s)
+            dict: 更新后的时间相关属性
         """
-        return self.mu_g0 * np.exp(self.xi * t)
+        self._current_time = time
+        
+        # 更新浆液粘度（指数增长）
+        # μ_g(t) = μ_g0 * exp(ξ * t)
+        self._current_mu_g = self.mu_g0 * np.exp(self.xi * time)
+        
+        # 返回更新后的属性字典（用于调试和输出）
+        updated_props = {
+            'time': time,
+            'grout_viscosity': self._current_mu_g,
+            'grout_viscosity_constant': fem.Constant(self.mesh, self._current_mu_g)
+        }
+        
+        if self.rank == 0 and abs(time) > 1e-10:  # 非初始时间
+            self.logger.debug(f"更新时间相关属性: t={time:.1f}s, μ_g={self._current_mu_g:.4e} Pa·s")
+        
+        return updated_props
     
-    def mixture_viscosity(self, c: ufl.Scalar, t: float, mesh) -> ufl.Scalar:
+    def calculate_permeability(self, phi):
         """
-        混合物粘度 [Eq. 7]
+        Kozeny-Carman关系：计算渗透率
         
         Args:
-            c: 浆液浓度场
-            t: 时间
-            mesh: 网格
-        
+            phi: 孔隙度场（UFL表达式或标量）
+            
         Returns:
-            混合物粘度表达式
-        """
-        mu_g = fem.Constant(mesh, self.grout_viscosity(t))
-        mu_w = fem.Constant(mesh, self.mu_w)
-        
-        return c * mu_g + (1 - c) * mu_w
-    
-    def mixture_density(self, c: ufl.Scalar, mesh) -> ufl.Scalar:
-        """
-        混合物密度 [Eq. 6]
-        
-        Args:
-            c: 浆液浓度场
-            mesh: 网格
-        
-        Returns:
-            混合物密度表达式
-        """
-        rho_g = fem.Constant(mesh, self.rho_g)
-        rho_w = fem.Constant(mesh, self.rho_w)
-        
-        return c * rho_g + (1 - c) * rho_w
-    
-    def permeability(self, phi: ufl.Scalar) -> ufl.Scalar:
-        """
-        Kozeny-Carman渗透率模型 [Eq. 5]
-        
-        Args:
-            phi: 孔隙度场
-        
-        Returns:
-            渗透率表达式
+            渗透率表达式 k = k0 * (φ^3) / (1-φ)^2
         """
         # 添加小量避免除零
-        epsilon = 1e-10
-        return self.k0 * phi**3 / ((1 - phi)**2 + epsilon)
+        denominator = (1 - phi)**2 + 1e-10
+        return self.k0 * (phi**3) / denominator
     
-    def filtration_rate(self, c: ufl.Scalar, q_w: ufl.Vector) -> ufl.Scalar:
+    def calculate_viscosity(self, c, time=None):
         """
-        过滤速率 [Eq. 9]
+        计算混合粘度
+        
+        Args:
+            c: 浆液浓度场（UFL表达式，0-1之间）
+            time: 当前时间，如果为None则使用缓存的时间
+            
+        Returns:
+            混合粘度表达式 μ = c*μ_g(t) + (1-c)*μ_w
+        """
+        # 使用指定的时间或缓存的时间
+        current_time = time if time is not None else self._current_time
+        
+        # 计算当前浆液粘度
+        mu_g = self.mu_g0 * ufl.exp(self.xi * current_time)
+        
+        # 混合粘度
+        return c * mu_g + (1 - c) * self.mu_w
+    
+    def calculate_density(self, c):
+        """
+        计算混合物密度
+        
+        Args:
+            c: 浆液浓度场（UFL表达式，0-1之间）
+            
+        Returns:
+            混合物密度表达式 ρ = c*ρ_g + (1-c)*ρ_w
+        """
+        return c * self.rho_g + (1 - c) * self.rho_w
+    
+    def calculate_filtration_rate(self, c, q_w):
+        """
+        过滤定律：计算浆液捕获速率
         
         Args:
             c: 浆液浓度场
-            q_w: 达西流速场
-        
-        Returns:
-            过滤速率表达式
-        """
-        # 计算流速模量（添加小量避免除零）
-        q_norm = ufl.sqrt(ufl.dot(q_w, q_w) + 1e-10)
-        return self.lambda_f * c * q_norm
-    
-    def create_gravity_vector(self, mesh) -> fem.Constant:
-        """
-        创建重力向量常数
-        
-        Args:
-            mesh: 网格
-        
-        Returns:
-            重力向量
-        """
-        return fem.Constant(mesh, PETSc.ScalarType(self.gravity))
-    
-    def create_body_force(self, mesh, include_buoyancy: bool = True) -> fem.Constant:
-        """
-        创建体力向量（考虑浮力）
-        
-        Args:
-            mesh: 网格
-            include_buoyancy: 是否包括浮力
-        
-        Returns:
-            体力向量
-        """
-        if include_buoyancy:
-            # 有效重度 = 饱和重度 - 水重度
-            gamma_sat = 20000  # 饱和土重度 N/m³ (20 kN/m³)
-            gamma_w = 9800  # 水重度 N/m³
-            gamma_eff = gamma_sat - gamma_w
+            q_w: 达西流速场（向量场）
             
-            body_force = np.array([0.0, 0.0, -gamma_eff])
-        else:
-            body_force = np.array([0.0, 0.0, 0.0])
+        Returns:
+            过滤速率表达式 ȯn = λ_f * c * |q_w|
+        """
+        # 计算速度幅值（添加小量避免零除）
+        qw_magnitude = ufl.sqrt(ufl.dot(q_w, q_w) + 1e-10)
         
-        return fem.Constant(mesh, PETSc.ScalarType(body_force))
+        return self.lambda_f * c * qw_magnitude
+    
+    def darcy_velocity(self, p, phi, c, time=None):
+        """
+        达西定律：计算渗流速度
+        
+        Args:
+            p: 压力场
+            phi: 孔隙度场
+            c: 浓度场
+            time: 当前时间
+            
+        Returns:
+            达西流速表达式 q_w = - (k/μ) * (∇p - ρg)
+        """
+        # 计算渗透率和粘度
+        k = self.calculate_permeability(phi)
+        mu = self.calculate_viscosity(c, time)
+        
+        # 计算混合物密度
+        rho = self.calculate_density(c)
+        
+        # 达西定律
+        return - (k / mu) * (ufl.grad(p) - rho * self.g)
+    
+    def calculate_all_derived(self, solution_fields, time):
+        """
+        计算所有衍生物理场（表达式形式）
+        
+        Args:
+            solution_fields: 字典，包含各物理场
+                {'displacement': u, 'pressure': p, 'porosity': phi, 
+                 'concentration': c, 'darcy_velocity': q_w}
+            time: 当前时间
+            
+        Returns:
+            dict: 衍生场表达式字典
+        """
+        derived_fields = {}
+        
+        try:
+            # 从solution_fields中提取基本场
+            phi = solution_fields.get('porosity')
+            c = solution_fields.get('concentration')
+            q_w = solution_fields.get('darcy_velocity')
+            
+            # 计算各衍生场（如果基本场存在）
+            if phi is not None:
+                derived_fields['permeability'] = self.calculate_permeability(phi)
+            
+            if c is not None:
+                derived_fields['viscosity'] = self.calculate_viscosity(c, time)
+                derived_fields['density'] = self.calculate_density(c)
+            
+            if c is not None and q_w is not None:
+                derived_fields['filtration_rate'] = self.calculate_filtration_rate(c, q_w)
+            
+            # 还可以计算其他衍生场
+            if 'pressure' in solution_fields and phi is not None and c is not None:
+                p = solution_fields['pressure']
+                derived_fields['darcy_velocity_calc'] = self.darcy_velocity(p, phi, c, time)
+            
+            return derived_fields
+            
+        except Exception as e:
+            self.logger.warning(f"计算衍生场时出错: {e}")
+            return {}
+    
+    def get_material_parameters(self):
+        """
+        获取所有材料参数（用于调试和输出）
+        
+        Returns:
+            dict: 材料参数字典
+        """
+        return {
+            'soil': {
+                'phi0': self.phi0,
+                'k0': self.k0
+            },
+            'grout': {
+                'rho_g': self.rho_g,
+                'mu_g0': self.mu_g0,
+                'xi': self.xi,
+                'lambda_f': self.lambda_f
+            },
+            'water': {
+                'rho_w': self.rho_w,
+                'mu_w': self.mu_w
+            },
+            'gravity': self.g_vector.tolist()
+        }
+    
+    def validate_parameters(self):
+        """
+        验证材料参数的合理性
+        
+        Returns:
+            tuple: (是否有效, 错误信息列表)
+        """
+        errors = []
+        
+        # 检查孔隙度范围
+        if self.phi0 <= 0 or self.phi0 >= 1:
+            errors.append(f"初始孔隙度 phi0={self.phi0} 不在(0,1)范围内")
+        
+        # 检查粘度非负
+        if self.mu_g0 <= 0:
+            errors.append(f"浆液初始粘度 mu_g0={self.mu_g0} 必须大于0")
+        
+        if self.mu_w <= 0:
+            errors.append(f"水粘度 mu_w={self.mu_w} 必须大于0")
+        
+        # 检查密度正定
+        if self.rho_g <= 0:
+            errors.append(f"浆液密度 rho_g={self.rho_g} 必须大于0")
+        
+        if self.rho_w <= 0:
+            errors.append(f"水密度 rho_w={self.rho_w} 必须大于0")
+        
+        # 检查过滤系数非负
+        if self.lambda_f < 0:
+            errors.append(f"过滤系数 lambda_f={self.lambda_f} 不能为负")
+        
+        valid = len(errors) == 0
+        
+        if not valid and self.rank == 0:
+            for error in errors:
+                self.logger.warning(f"材料参数错误: {error}")
+        
+        return valid, errors
+    
+    def create_initial_fields(self):
+        """
+        创建初始材料场（可选功能）
+        
+        Returns:
+            dict: 初始场字典
+        """
+        # 创建初始孔隙度场（均匀分布）
+        P1 = ufl.FiniteElement("CG", self.mesh.ufl_cell(), 1)
+        phi_space = fem.FunctionSpace(self.mesh, P1)
+        
+        phi_init = fem.Function(phi_space, name="initial_porosity")
+        phi_init.x.array[:] = self.phi0
+        
+        return {
+            'porosity': phi_init,
+            'permeability': self.calculate_permeability(phi_init)
+        }
