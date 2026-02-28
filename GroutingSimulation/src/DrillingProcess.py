@@ -340,6 +340,70 @@ with io.XDMFFile(comm, f"{output_dir}/final_displacement.xdmf", "w") as xdmf:
     xdmf.write_mesh(msh)
     xdmf.write_function(u_current)
 
+# ================= 内部四分之一模型可视化（交互式） =================
+if comm.rank == 0:
+    try:
+        print("\n准备显示内部四分之一模型（x∈[0,2], y∈[0,2]）...")
+        from pyvista import Plotter
+
+        # 获取网格拓扑
+        topology, cell_types, geometry = plot.vtk_mesh(V_u)
+
+        # 获取最终步活动单元掩码（挖除后剩余的土体）
+        active_mask = layer_manager.get_active_cells_mask()
+        active_cells_indices = np.where(active_mask)[0]
+
+        # 创建完整网格并添加位移数据
+        grid_full = pyvista.UnstructuredGrid(topology, cell_types, geometry)
+
+        # 初始位移
+        disp_initial = u_0.x.array.reshape(geometry.shape[0], 3)
+        grid_full.point_data["Displacement_initial"] = disp_initial
+        grid_full.point_data["Displacement_Z_initial"] = disp_initial[:, 2]
+
+        # 最终位移
+        disp_final = u_current.x.array.reshape(geometry.shape[0], 3)
+        grid_full.point_data["Displacement_final"] = disp_final
+        grid_full.point_data["Displacement_Z_final"] = disp_final[:, 2]
+
+        # 位移变化
+        disp_change = u_change.x.array.reshape(geometry.shape[0], 3)
+        grid_full.point_data["Displacement_change"] = disp_change
+        grid_full.point_data["Displacement_Z_change"] = disp_change[:, 2]
+
+        # 提取活动单元子网格
+        grid_active = grid_full.extract_cells(active_cells_indices)
+
+        # 裁剪出内部四分之一：x ∈ [0,2] 且 y ∈ [0,2]
+        grid_inner = grid_active.clip(normal='x', origin=[2.0, 0, 0], invert=True)   # 保留 x <= 2
+        grid_inner = grid_inner.clip(normal='y', origin=[0, 2.0, 0], invert=True)   # 保留 y <= 2
+
+        # 创建交互式绘图窗口（显示最终位移场的Z分量）
+        plotter = Plotter()  # 默认 off_screen=False，会弹出窗口
+        plotter.window_size = [1200, 900]
+        plotter.add_mesh(grid_inner,
+                         scalars="Displacement_Z_change",
+                         cmap="rainbow",
+                         show_scalar_bar=True,
+                         scalar_bar_args={
+                     'title': 'Displacement(m)',
+                     'vertical': True,
+                     # 设置自定义刻度和标签
+                     })
+        plotter.add_title("Final Displacement Field - Inner Quarter Model (x,y ∈ [0,2])")
+        plotter.add_axes()
+        plotter.view_isometric()  # 等轴测视角，便于观察内部
+        plotter.camera.zoom(1.2)
+        plotter.show()  # 弹出窗口显示，可交互旋转/缩放
+
+        # 如需查看初始场或变化场，可类似创建新窗口（取消下面注释）
+        # plotter2 = Plotter()
+        # plotter2.add_mesh(grid_inner, scalars="Displacement_Z_initial", cmap="coolwarm", ...)
+        # plotter2.show()
+
+    except Exception as e:
+        print(f"可视化失败: {e}")
+'''
 # 创建切片可视化
 if comm.rank == 0:
     try:
@@ -439,7 +503,7 @@ if comm.rank == 0:
         
     except Exception as e:
         print(f"切片可视化失败: {e}")
-
+'''
 # 生成详细的位移统计报告
 if comm.rank == 0:
     print("\n" + "="*60)
