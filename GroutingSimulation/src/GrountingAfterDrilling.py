@@ -314,7 +314,76 @@ class GroutingSimulation:
             print(f"可视化失败: {e}")
             import traceback
             traceback.print_exc()
+    
+    def _create_slice_visualizations(self, output_dir):
+        """创建四分之一内部场可视化（交互式）"""
+        try:
+            # ========== 位移场可视化 ==========
+            # 创建位移网格
+            topology_u, cell_types_u, geometry_u = plot.vtk_mesh(self.V_u)
+            grid_u_full = pyvista.UnstructuredGrid(topology_u, cell_types_u, geometry_u)
+            disp_z = self.u_increment.x.array.reshape(geometry_u.shape[0], 3)[:, 2]
+            grid_u_full.point_data["Displacement_Z"] = disp_z
 
+            # 提取地基单元（标记为1）
+            foundation_cells = np.where(self.cell_markers.values == 1)[0]
+            grid_u_foundation = grid_u_full.extract_cells(foundation_cells)
+
+            # 裁剪出内部四分之一：x ∈ [0,2], y ∈ [0,2]
+            grid_u_inner = grid_u_foundation.clip(normal='x', origin=[2.0, 0, 0], invert=True)   # x ≤ 2
+            grid_u_inner = grid_u_inner.clip(normal='y', origin=[0, 2.0, 0], invert=True)        # y ≤ 2
+
+            # 创建位移窗口
+            plotter_u = pyvista.Plotter(window_size=[1200, 900])
+            plotter_u.add_mesh(grid_u_inner,
+                            scalars="Displacement_Z",
+                            cmap="rainbow",
+                            show_scalar_bar=True,
+                            scalar_bar_args={
+                            'title': 'Displacement(m)',
+                            'vertical': True,
+                            })
+            plotter_u.add_axes()
+            plotter_u.view_isometric()
+            plotter_u.camera.zoom(1.2)
+
+            # 显示交互窗口
+            plotter_u.show()
+
+            # ========== 压力场可视化 ==========
+            # 创建压力网格
+            topology_p, cell_types_p, geometry_p = plot.vtk_mesh(self.V_p)
+            grid_p_full = pyvista.UnstructuredGrid(topology_p, cell_types_p, geometry_p)
+            grid_p_full.point_data["Pressure"] = self.p.x.array[:]  # 单位 Pa
+
+            # 提取地基单元
+            grid_p_foundation = grid_p_full.extract_cells(foundation_cells)
+
+            # 裁剪内部四分之一
+            grid_p_inner = grid_p_foundation.clip(normal='x', origin=[2.0, 0, 0], invert=True)
+            grid_p_inner = grid_p_inner.clip(normal='y', origin=[0, 2.0, 0], invert=True)
+
+            # 创建压力窗口
+            plotter_p = pyvista.Plotter(window_size=[1200, 900])
+            plotter_p.add_mesh(grid_p_inner,
+                            scalars="Pressure",
+                            cmap="rainbow",
+                            show_scalar_bar=True,
+                            scalar_bar_args={'title': 'Pressure (Pa)',
+                                             'vertical': True,
+                            })
+            plotter_p.add_axes()
+            plotter_p.view_isometric()
+            plotter_p.camera.zoom(1.2)
+
+            # 显示交互窗口
+            plotter_p.show()
+
+        except Exception as e:
+            print(f"四分之一内部场可视化失败: {e}")
+            import traceback
+            traceback.print_exc()
+    '''
     def _create_slice_visualizations(self, output_dir):
         """创建切片可视化"""
         # 位移场切片
@@ -367,7 +436,7 @@ class GroutingSimulation:
         plotter3.camera.zoom(1.5)
         plotter3.screenshot(f"{output_dir}/Pressure.png")
         plotter3.close()
-
+    '''
     def _create_analysis_curves(self, output_dir):
         """创建分析曲线"""
         # 创建位移场和压力场的网格
