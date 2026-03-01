@@ -16,7 +16,7 @@ class WeakFormBuilder:
     组装非线性残差 F 和雅可比矩阵 J
     """
     
-    def __init__(self, function_space, materials, config, fields):
+    def __init__(self, function_space, materials, config, fields, cell_tags=None):
         """
         初始化弱形式构建器
         
@@ -30,6 +30,8 @@ class WeakFormBuilder:
         self.mat = materials
         self.config = config
         self.fields = fields or {}
+        self.cell_tags = cell_tags
+        self.mesh = function_space.mesh  # 从函数空间获取网格
         
         # 日志
         self.logger = logging.getLogger(f"WeakFormBuilder_rank{MPI.COMM_WORLD.Get_rank()}")
@@ -74,6 +76,8 @@ class WeakFormBuilder:
         mu = self.mat.calculate_viscosity(c, time)
         # 混合物密度 ρ(c)
         rho = self.mat.calculate_density(c)
+        # 整体密度
+        rho_bulk = self.mat.calculate_bulk_density(phi, c)   
         # 过滤速率 ^n = λ_f c |q|
         n_hat = self.mat.calculate_filtration_rate(c, q)
         
@@ -86,25 +90,33 @@ class WeakFormBuilder:
         # Biot系数 α
         alpha = self.mat.biot_coefficient()
         
+        # 定义体积积分度量：如果提供了细胞标记，则只在地基区域（标记1）积分
+        if self.cell_tags is not None:
+            # 创建带子域的积分度量
+            dx = ufl.Measure("dx", domain=self.mesh, subdomain_data=self.cell_tags)
+            dx_domain = dx(1)  # 仅标记为1的区域（地基）
+        else:
+            dx_domain = ufl.dx  # 默认全区域积分
+        
         # 弱形式：∫ σ' : ∇v_u dx - ∫ α p (∇·v_u) dx - ∫ ρ g · v_u dx = 0
-        F_u = ufl.inner(sigma_eff, ufl.grad(v_u)) * ufl.dx \
-              - alpha * p * ufl.div(v_u) * ufl.dx \
-              - ufl.inner(rho * g, v_u) * ufl.dx
+        F_u = ufl.inner(sigma_eff, ufl.grad(v_u)) * dx_domain \
+              - alpha * p * ufl.div(v_u) * dx_domain \
+              - ufl.inner(rho_bulk * g, v_u) * dx_domain
         
         # --- 连续性方程 (F_p) ---
         # ∇·q + ∇·v_s = 0
         # 乘以测试函数 v_p，积分
-        F_p = (ufl.div(q) + ufl.div(v_s)) * v_p * ufl.dx
+        F_p = (ufl.div(q) + ufl.div(v_s)) * v_p * dx_domain
         
         # --- 孔隙率演化方程 (F_phi) ---
         # -∂φ/∂t + ∇·v_s - ∇·(φ v_s) = ^n
         # 时间离散：- (φ - φ_n)/dt + ∇·v_s - ∇·(φ v_s) = ^n
         # 对 ∇·(φ v_s) 项分部积分：∫ -∇·(φ v_s) v_phi dx = ∫ φ v_s · ∇v_phi dx - ∫ φ v_s·n v_phi ds
         # 忽略边界项（由BC处理），得到：
-        F_phi = (- (phi - phi_n) / dt * v_phi) * ufl.dx \
-                + ufl.div(v_s) * v_phi * ufl.dx \
-                + ufl.inner(phi * v_s, ufl.grad(v_phi)) * ufl.dx \
-                - n_hat * v_phi * ufl.dx
+        F_phi = (- (phi - phi_n) / dt * v_phi) * dx_domain \
+                + ufl.div(v_s) * v_phi * dx_domain \
+                + ufl.inner(phi * v_s, ufl.grad(v_phi)) * dx_domain \
+                - n_hat * v_phi * dx_domain
         
         # --- 浓度输运方程 (F_c) ---
         # ∂(cφ)/∂t + ∇·(c q) + ∇·(c φ v_s) = -^n
@@ -113,15 +125,15 @@ class WeakFormBuilder:
         # ∫ ∇·(c q) v_c dx = -∫ c q · ∇v_c dx + ∫ c q·n v_c ds
         # ∫ ∇·(c φ v_s) v_c dx = -∫ c φ v_s · ∇v_c dx + ∫ c φ v_s·n v_c ds
         # 忽略边界项，得到：
-        F_c = ((c * phi - c_n * phi_n) / dt * v_c) * ufl.dx \
-              - ufl.inner(c * q, ufl.grad(v_c)) * ufl.dx \
-              - ufl.inner(c * phi * v_s, ufl.grad(v_c)) * ufl.dx \
-              + n_hat * v_c * ufl.dx
+        F_c = ((c * phi - c_n * phi_n) / dt * v_c) * dx_domain \
+              - ufl.inner(c * q, ufl.grad(v_c)) * dx_domain \
+              - ufl.inner(c * phi * v_s, ufl.grad(v_c)) * dx_domain \
+              + n_hat * v_c * dx_domain
         
         # --- 达西定律 (F_q) ---
         # q + (k/μ)(∇p - ρ g) = 0
         # 乘以向量测试函数 v_q
-        F_q = ufl.inner(q + (k / mu) * (ufl.grad(p) - rho * g), v_q) * ufl.dx
+        F_q = ufl.inner(q + (k / mu) * (ufl.grad(p) - rho * g), v_q) * dx_domain
         
         # --- 总残差 ---
         F = F_u + F_p + F_phi + F_c + F_q

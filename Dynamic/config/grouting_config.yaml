@@ -1,139 +1,68 @@
 # 多物理场注浆模拟配置文件
-# 文件位置: Dynamic/config/grouting_config.yaml
+# 坐标系：竖直向上为正，重力加速度 9.81 m/s² 方向向下
 
-# 1. 模拟参数 (简化版)
 simulation:
-  total_time: 7200.0         # 总模拟时间 (秒) - 2小时
-  dt_initial: 1.0           # 初始时间步长 (秒)
-  dt_min: 0.01              # 最小时间步长 (秒)
-  dt_max: 60.0              # 最大时间步长 (秒)
-  max_steps: 10000          # 最大时间步数
-  tolerance: 1e-6           # 收敛容差
-  relative_tolerance: 1e-4   # 相对收敛容差
-  max_consecutive_failures: 5  # 最大连续失败次数
-  
-  # 时间积分方法 (简化版: backward_euler, crank_nicolson)
-  time_integration_method: "backward_euler"
-  
-  # 自适应时间步策略 (简化版: fixed, basic)
-  adaptive_strategy: "basic"
-  adaptive_grow_factor: 1.2    # 步长增长因子
-  adaptive_reduce_factor: 0.5  # 步长缩减因子
-  max_dt_change_ratio: 10.0   # 最大步长变化比率
+  total_time: 7200.0                # 总模拟时间 (秒)，2小时
+  dt_initial: 1.0                   # 初始时间步长 (秒)
+  dt_min: 0.01                      # 最小时间步长 (秒)
+  dt_max: 60.0                      # 最大时间步长 (秒)
+  save_frequency: 10                # 结果保存频率（每 N 步）
+  max_steps: 10000                   # 最大时间步数
+  tolerance: 1e-6                    # 全局收敛容差
+  max_consecutive_failures: 5        # 最大连续求解失败次数
+  adaptive_strategy: "basic"         # 自适应时间步策略 ("fixed" 或 "basic")
+  time_integration_method: "backward_euler"  # 时间积分方法
 
-# 2. 几何参数
-geometry:
-  height: 13.0            # 地基高度 (m)
-  depth: 10.0             # 钻孔深度 (m)
-  drill_radius: 0.05       # 钻孔半径 (m)
-  foundation_x: 4.0       # 地基X方向尺寸 (m)
-  foundation_y: 4.0       # 地基Y方向尺寸 (m)
-  
-# 3. 材料参数
 materials:
-  # 3.1 土壤参数
   soil:
-    phi0: 0.45            # 初始孔隙度
-    k0: 1e-12             # 初始渗透率 (m²)
-    E: 20e6               # 杨氏模量 (Pa)
-    nu: 0.3               # 泊松比
-    rho_s: 2650           # 土壤颗粒密度 (kg/m³)
-    friction_angle: 30.0  # 摩擦角 (°)
-    cohesion: 10e3        # 黏聚力 (Pa)
-    dilatancy_angle: 5.0  # 剪胀角 (°)
-    K0: 0.5               # 静止土压力系数
-    permeability0: 1e-12  # 初始渗透率 (用于计算衍生场)
-    
-  # 3.2 浆液参数
+    E: 20e6                          # 杨氏模量 (Pa)
+    nu: 0.3                           # 泊松比
+    phi0: 0.4                        # 初始孔隙度
+    k0: 1e-12                         # 初始渗透率 (m²)
+    biot_coefficient: 1.0              # Biot 系数
+    rho_s: 2700.0                      # 土颗粒密度 (kg/m³)
   grout:
-    # 基本物理性质
-    rho_g: 1800           # 浆液密度 (kg/m³)
-    mu_g0: 0.01           # 浆液初始粘度 (Pa·s)
-    xi: 1.56              # 粘度增长常数 (1/s)
-    
-    # 注浆过程参数 (简化版)
-    pressure: 220e3       # 最大注浆压力 (Pa)
-    duration: 600.0       # 注浆持续时间 (s)
-    rise_time: 60.0       # 压力上升时间 (s)
-    
-    # 过滤和捕获参数
-    filtration_coeff: 0.75  # 过滤系数
-    concentration_max: 1.0  # 最大浓度
-    
-  # 3.3 水参数
+    rho_g: 1800.0                      # 浆液密度 (kg/m³)
+    mu_g0: 0.01                        # 浆液初始粘度 (Pa·s)
+    xi: 1.56                           # 粘度增长常数 (1/s)
+    filtration_coeff: 0.75              # 过滤系数
+    pressure: 420e3                     # 最大注浆压力 (Pa)
+    duration: 7200.0                     # 注浆持续时间 (秒)
+    rise_time: 60.0                     # 压力上升时间 (秒)
+    pressure_mode: "linear_increase"    # 压力演化模式 ("linear_increase", "pulse", "constant")
+    # 脉冲模式参数（仅当 pressure_mode 为 "pulse" 时使用）
+    # pulse_period: 60.0
+    # pulse_duty_cycle: 0.5
   water:
-    rho_w: 1000           # 水密度 (kg/m³)
-    mu_w: 0.001           # 水粘度 (Pa·s)
-    K_w: 1e-4             # 水力传导率 (m/s)
+    rho_w: 1000.0                       # 水密度 (kg/m³)
+    mu_w: 0.001                          # 水粘度 (Pa·s)
 
-# 4. 注浆终止条件 (新增)
-grouting_termination:
-  holding_time: 1200.0           # 屏浆时间 (秒) - 20分钟
-  injection_rate_threshold: 2.0  # 注入率阈值 (L/min)
-  holding_rate_threshold: 2.0    # 屏浆期间注入率阈值 (L/min)
+geometry:
+  height: 13.0                          # 地基高度 (m)
+  depth: 10.0                            # 钻孔深度 (m)
+  drill_radius: 0.05                      # 钻孔半径 (m)
 
-# 5. 边界条件参数
-boundary_conditions:
-  # 压力边界
-  pressure:
-    top_zero_pressure: true  # 顶部零压力边界
-    side_water_pressure: true  # 侧面水压力边界
-    
-  # 位移边界
-  displacement:
-    bottom_fixed: true     # 底面固定位移
-    side_horizontal_fixed: true  # 侧面水平位移固定
-    
-  # 浓度边界
-  concentration:
-    grout_inlet_concentration: 1.0  # 注浆孔浓度
-    apply_only_during_grouting: true  # 只在注浆期间应用
-
-# 6. 求解器设置
 solver:
-  type: "newton"          # 求解器类型 (newton, linear)
-  max_iterations: 20      # 最大迭代次数
-  relative_tolerance: 1e-6  # 相对容差
-  absolute_tolerance: 1e-8  # 绝对容差
-  linear_solver: "mumps"  # 线性求解器 (mumps, petsc, umfpack等)
-  preconditioner: "ilu"   # 预条件子 (ilu, amg, hypre等)
-  reuse_preconditioner: true  # 重用预条件子
-  verbose: false          # 详细输出
+  type: "newton"                         # 求解器类型
+  max_iterations: 20                      # 非线性最大迭代次数
+  relative_tolerance: 1e-6                # 相对容差
+  absolute_tolerance: 1e-8                # 绝对容差
+  linear_solver: "mumps"                  # 线性求解器 ("mumps" 或 "gmres")
+  preconditioner: "ilu"                   # 预条件子（当 linear_solver 为 "gmres" 时使用）
+  report_convergence: false                # 是否输出详细收敛信息
 
-# 7. 输出设置 (简化版)
 output:
-  format: "xdmf"          # 输出格式 (xdmf, h5)
-  
-  # 主要物理场输出
+  format: "xdmf"                          # 输出格式
   fields:
-    - displacement        # 位移场
-    - pressure           # 压力场
-    - porosity           # 孔隙度场
-    - concentration      # 浓度场
-    - darcy_velocity     # 达西流速场
-    
-  write_frequency: 10    # 输出频率
-  output_dir: "Dynamic/results"  # 输出目录
-  monitor_frequency: 100  # 监控输出频率
+    - "displacement"
+    - "pressure"
+    - "porosity"
+    - "concentration"
+    - "darcy_velocity"
+  write_frequency: 10                      # 写入频率（每 N 步）
+  monitor_frequency: 100                    # 监控信息输出频率（每 N 步）
 
-# 8. 日志设置
-logging:
-  level: "INFO"          # 日志级别 (DEBUG, INFO, WARNING, ERROR)
-  file_logging: true     # 是否记录到文件
-  console_logging: true  # 是否输出到控制台
-  log_dir: "Dynamic/logs"  # 日志目录
-
-# 9. 并行计算设置 (MPI)
-parallel:
-  use_mpi: true          # 是否使用MPI
-  partition_method: "scotch"  # 分区方法
-  ghost_mode: "shared_facet"  # 幽灵模式
-  overlap: 1             # 重叠层数
-
-# 10. 网格设置
-mesh:
-  file: "Dynamic/meshes/foundation_drilling_model.msh"  # 网格文件
-  gdim: 3               # 几何维度
-  partition: true       # 是否分区
-  check_quality: true   # 是否检查网格质量
-  repair_mesh: false    # 是否修复网格
+grouting_termination:
+  holding_time: 1200.0                     # 屏浆目标时间 (秒)，20分钟
+  injection_rate_threshold: 2.0             # 进入屏浆的注入率阈值 (L/min)
+  holding_rate_threshold: 2.0               # 屏浆完成平均注入率阈值 (L/min)

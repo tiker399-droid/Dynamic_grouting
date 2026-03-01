@@ -120,6 +120,23 @@ class MaterialProperties:
         """计算混合物密度 ρ = c ρ_g + (1-c) ρ_w"""
         return c * self.rho_g + (1 - c) * self.rho_w
     
+    def calculate_bulk_density(self, phi, c):
+        """
+        计算饱和多孔介质的整体密度
+        ρ_bulk = (1 - φ) * ρ_s + φ * [c ρ_g + (1-c) ρ_w]
+        
+        Args:
+            phi: 孔隙度场
+            c: 浓度场
+        
+        Returns:
+            整体密度表达式
+        """
+        # 流体密度
+        rho_f = c * self.rho_g + (1 - c) * self.rho_w
+        # 整体密度
+        return (1 - phi) * self.rho_s + phi * rho_f
+    
     def calculate_filtration_rate(self, c, q_w):
         """过滤定律：ȯn = λ_f * c * |q_w|"""
         q_mag = ufl.sqrt(ufl.dot(q_w, q_w) + 1e-10)
