@@ -123,10 +123,10 @@ class DynamicBoundaryConditionsManager:
         geom_config = self.config.get('geometry', {})
         water_config = self.config.get('materials', {}).get('water', {})
 
-        # 注浆压力参数
-        self.pressure_max = grout_config.get('pressure', 220e3)           # Pa
-        self.grouting_duration = grout_config.get('duration', 600.0)      # s
-        self.rise_time = grout_config.get('rise_time', 60.0)              # s
+        # 注浆压力参数（确保类型转换）
+        self.pressure_max = float(grout_config.get('pressure', 220e3))           # Pa
+        self.grouting_duration = float(grout_config.get('duration', 600.0))      # s
+        self.rise_time = float(grout_config.get('rise_time', 60.0))              # s
         pressure_mode_str = grout_config.get('pressure_mode', 'linear_increase')
         try:
             self.pressure_mode = PressureEvolutionMode(pressure_mode_str)
@@ -327,12 +327,12 @@ class DynamicBoundaryConditionsManager:
         # 底面固定 (marker 107)
         if 'marker_107' in self.boundary_geometries:
             facets = self.boundary_geometries['marker_107']['facets']
-            zero_vec = np.zeros(self.gdim, dtype=np.float64)
-            bc = fem.dirichletbc(
-                zero_vec,
-                fem.locate_dofs_topological(V_u, fdim, facets),
-                V_u
-            )
+            # 使用 Function 作为边界值，需要 collapse 子空间
+            V_u_collapsed, u_to_parent = V_u.collapse()
+            zero_vec_func = fem.Function(V_u_collapsed)
+            zero_vec_func.x.array[:] = 0.0
+            dofs = fem.locate_dofs_topological(V_u, fdim, facets)
+            bc = fem.dirichletbc(zero_vec_func, dofs)
             self.bcs.append(bc)
 
         # 侧面法向约束 (markers 103,104,105,106 对应四个侧面)
@@ -346,8 +346,13 @@ class DynamicBoundaryConditionsManager:
             if marker_name in self.boundary_geometries:
                 facets = self.boundary_geometries[marker_name]['facets']
                 if facets.shape[0] > 0:
-                    dofs = fem.locate_dofs_topological(V_u.sub(comp), fdim, facets)
-                    bc = fem.dirichletbc(np.float64(0.0), dofs, V_u.sub(comp))
+                    # 子空间的边界条件需要用 collapse
+                    V_comp = V_u.sub(comp)
+                    V_comp_collapsed, comp_to_parent = V_comp.collapse()
+                    zero_func = fem.Function(V_comp_collapsed)
+                    zero_func.x.array[:] = 0.0
+                    dofs = fem.locate_dofs_topological(V_comp, fdim, facets)
+                    bc = fem.dirichletbc(zero_func, dofs)
                     self.bcs.append(bc)
 
     def _create_pressure_bcs(self):
@@ -363,22 +368,18 @@ class DynamicBoundaryConditionsManager:
         # 1. 顶部零压力
         if 'top' in self.boundary_geometries:
             facets = self.boundary_geometries['top']['facets']
-            bc = fem.dirichletbc(
-                np.float64(0.0),
-                fem.locate_dofs_topological(V_p, fdim, facets),
-                V_p
-            )
+            V_p_collapsed, p_to_parent = V_p.collapse()
+            zero_func = fem.Function(V_p_collapsed)
+            zero_func.x.array[:] = 0.0
+            dofs = fem.locate_dofs_topological(V_p, fdim, facets)
+            bc = fem.dirichletbc(zero_func, dofs)
             self.bcs.append(bc)
 
         # 2. 侧面静水压力
         # 创建静水压力表达式（作为函数）
-        x = ufl.SpatialCoordinate(self.mesh)
-        water_pressure_expr = self.water_density * self.gravity * (self.foundation_height - x[2])
-        # 插值到压力空间
-        water_pressure_func = fem.Function(V_p)
-        water_pressure_func.interpolate(
-            fem.Expression(water_pressure_expr, V_p.element.interpolation_points())
-        )
+        V_p_collapsed, p_to_parent = V_p.collapse()
+        water_pressure_func = fem.Function(V_p_collapsed)
+        water_pressure_func.interpolate(lambda x: self.water_density * self.gravity * (self.foundation_height - x[2]))
 
         side_markers = ['marker_103', 'marker_104', 'marker_105', 'marker_106']
         for marker in side_markers:
@@ -396,7 +397,7 @@ class DynamicBoundaryConditionsManager:
         """更新注浆孔压力边界条件（根据 self.time）"""
         if self.time_controller is not None:
             stage = self.time_controller.grouting_stage
-            if stage == GroutingStage.COMPLETED:
+            if stage == GroutingStage.AFTER_GROUTING:
                 current_pressure = 0.0
             else:
                 current_pressure = self.pressure_func(self.time)
@@ -416,7 +417,8 @@ class DynamicBoundaryConditionsManager:
             grout_inlets = ['grout_inlet_fallback']
 
         # 创建压力函数（为每个注浆孔单独创建，但值相同）
-        pressure_func = fem.Function(V_p)
+        V_p_collapsed, p_to_parent = V_p.collapse()
+        pressure_func = fem.Function(V_p_collapsed)
         pressure_func.x.array[:] = current_pressure
 
         for inlet_name in grout_inlets:
@@ -439,7 +441,8 @@ class DynamicBoundaryConditionsManager:
 
         if self.current_values['is_grouting_active']:
             # 注浆期间，在注浆孔施加 c=1
-            conc_func = fem.Function(V_c)
+            V_c_collapsed, c_to_parent = V_c.collapse()
+            conc_func = fem.Function(V_c_collapsed)
             conc_func.x.array[:] = 1.0
 
             grout_inlets = [name for name in self.boundary_geometries.keys()

@@ -47,28 +47,28 @@ class MaterialProperties:
     def _extract_parameters(self, config):
         """从配置字典中提取所有材料参数"""
         materials_config = config.get('materials', {})
-        
-        # 土壤参数
+
+        # 土壤参数 - 确保类型转换
         soil = materials_config.get('soil', {})
-        self.phi0 = soil.get('phi0', 0.40)                 # 初始孔隙度
-        self.k0 = soil.get('k0', 1e-12)                    # 初始渗透率 (m²)
-        self.E = soil.get('E', 20e6)                        # 杨氏模量 (Pa)
-        self.nu = soil.get('nu', 0.3)                       # 泊松比
-        self.alpha = soil.get('biot_coefficient', 1.0)      # Biot系数
+        self.phi0 = float(soil.get('phi0', 0.40))              # 初始孔隙度
+        self.k0 = float(soil.get('k0', 1e-12))                 # 初始渗透率 (m²)
+        self.E = float(soil.get('E', 20e6))                    # 杨氏模量 (Pa)
+        self.nu = float(soil.get('nu', 0.3))                  # 泊松比
+        self.alpha = float(soil.get('biot_coefficient', 1.0)) # Biot系数
         # 可选：土颗粒密度（如果需要）
-        self.rho_s = soil.get('rho_s', 2020.0)              # 土颗粒密度 (kg/m³)
-        
-        # 浆液参数
+        self.rho_s = float(soil.get('rho_s', 2020.0))         # 土颗粒密度 (kg/m³)
+
+        # 浆液参数 - 确保类型转换
         grout = materials_config.get('grout', {})
-        self.rho_g = grout.get('rho_g', 1800.0)             # 浆液密度 (kg/m³)
-        self.mu_g0 = grout.get('mu_g0', 0.01)               # 浆液初始粘度 (Pa·s)
-        self.xi = grout.get('xi', 1.56)                      # 粘度增长常数 (1/s)
-        self.lambda_f = grout.get('filtration_coeff', 0.75)  # 过滤系数
-        
-        # 水参数
+        self.rho_g = float(grout.get('rho_g', 1800.0))        # 浆液密度 (kg/m³)
+        self.mu_g0 = float(grout.get('mu_g0', 0.01))          # 浆液初始粘度 (Pa·s)
+        self.xi = float(grout.get('xi', 1.56))                 # 粘度增长常数 (1/s)
+        self.lambda_f = float(grout.get('filtration_coeff', 0.75)) # 过滤系数
+
+        # 水参数 - 确保类型转换
         water = materials_config.get('water', {})
-        self.rho_w = water.get('rho_w', 1000.0)              # 水密度 (kg/m³)
-        self.mu_w = water.get('mu_w', 0.001)                 # 水粘度 (Pa·s)
+        self.rho_w = float(water.get('rho_w', 1000.0))        # 水密度 (kg/m³)
+        self.mu_w = float(water.get('mu_w', 0.001))           # 水粘度 (Pa·s)
         
         # 重力加速度（z轴向上为正）
         self.g_magnitude = -9.81                               # m/s²
@@ -83,11 +83,14 @@ class MaterialProperties:
         # 重力向量 (z向上为正)
         self.g_vector = np.array([0.0, 0.0, self.g_magnitude], dtype=np.float64)
         self.g = fem.Constant(self.mesh, self.g_vector)
+
+        # 材料常数（用于弱形式）- 使用 PETSc.ScalarType 确保兼容性
+        from petsc4py import PETSc
+        scalar_dtype = PETSc.ScalarType
         
-        # 材料常数（用于弱形式）
-        self.k0_constant = fem.Constant(self.mesh, self.k0)
-        self.mu_g0_constant = fem.Constant(self.mesh, self.mu_g0)
-        self.lambda_f_constant = fem.Constant(self.mesh, self.lambda_f)
+        self.k0_constant = fem.Constant(self.mesh, scalar_dtype(self.k0))
+        self.mu_g0_constant = fem.Constant(self.mesh, scalar_dtype(self.mu_g0))
+        self.lambda_f_constant = fem.Constant(self.mesh, scalar_dtype(self.lambda_f))
         
         # 弹性常数（可转换为UFL常数，但直接用标量在表达式中也可）
         # 这里不创建Constant，因为E和nu在表达式中直接使用数字

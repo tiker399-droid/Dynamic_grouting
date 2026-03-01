@@ -6,6 +6,7 @@
 """
 
 import logging
+import os
 from pathlib import Path
 from mpi4py import MPI
 import yaml
@@ -260,17 +261,17 @@ class MultiphysicsGroutingSimulation:
             # 3. 函数空间
             self._initialize_function_spaces()
 
-            # 4. 边界条件管理器
+            # 4. 时间步进控制器（需要在边界条件之前初始化）
+            self._initialize_time_stepping()
+
+            # 5. 边界条件管理器
             self._initialize_boundary_conditions()
 
-            # 5. 弱形式构建器
+            # 6. 弱形式构建器
             self._initialize_weak_forms()
 
-            # 6. 求解器管理器
+            # 7. 求解器管理器
             self._initialize_solver_manager()
-
-            # 7. 时间步进控制器
-            self._initialize_time_stepping()
 
             # 8. 输出管理器
             self._initialize_output_manager()
@@ -311,11 +312,25 @@ class MultiphysicsGroutingSimulation:
     def _initialize_function_spaces(self):
         """创建混合函数空间 [u, p, phi, c, q]"""
         gdim = self.mesh.geometry.dim
-        P1 = ufl.FiniteElement("CG", self.mesh.ufl_cell(), 1)
-        P1_vec = ufl.VectorElement("CG", self.mesh.ufl_cell(), 1, dim=gdim)
 
-        mixed_element = ufl.MixedElement([P1_vec, P1, P1, P1, P1_vec])
-        self.W = fem.FunctionSpace(self.mesh, mixed_element)
+        # 使用 basix 创建有限元（新版 DOLFINx API）
+        import basix.ufl
+
+        # 通过拓扑获取单元类型名称
+        cell_type = self.mesh.topology.cell_name()
+
+        # 标量元素（用于 p, phi, c）
+        P1 = basix.ufl.element("Lagrange", cell_type, 1, shape=())
+
+        # 向量元素（用于 u, q）
+        P1_vec = basix.ufl.element("Lagrange", cell_type, 1, shape=(gdim,))
+
+        # 创建混合元素
+        from basix.ufl import mixed_element as create_mixed_element
+        mixed_element = create_mixed_element([P1_vec, P1, P1, P1, P1_vec])
+
+        # 新版 DOLFINx API 使用 functionspace
+        self.W = fem.functionspace(self.mesh, mixed_element)
 
         # 创建解函数
         self.solution = fem.Function(self.W, name="Solution")
