@@ -137,15 +137,19 @@ class WeakFormBuilder:
         
         # --- 总残差 ---
         F = F_u + F_p + F_phi + F_c + F_q
-        
+
         # --- 雅可比矩阵 (自动微分) ---
         du = ufl.TrialFunction(self.W)
         J = ufl.derivative(F, solution, du)
+
+        # 注意：DOLFINx 0.9.0 的 NonlinearProblem 会自动编译 UFL 形式
+        # 这里直接返回 UFL 形式，不预先编译
+        # 编译工作由 NonlinearProblem 在初始化时自动完成
         
         # 记录调试信息（可选）
         if self.logger.isEnabledFor(logging.DEBUG):
             self.logger.debug(f"弱形式构建完成，时间={time:.2f}, dt={dt:.3e}")
-        
+
         return F, J
     
     def build_mass_matrix(self):
