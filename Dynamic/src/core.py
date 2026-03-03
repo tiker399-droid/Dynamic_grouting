@@ -2,7 +2,8 @@
 多物理场耦合注浆模拟 - 主控制器（重写版）
 基于混合物理论，模拟地基固结注浆过程
 坐标系：竖直向上为正，重力向量 (0,0,-9.81)
-混合函数空间顺序：[位移, 压力, 孔隙度, 浓度, 达西速度]
+混合函数空间顺序：[位移, 压力, 孔隙度, 浓度]
+注：使用压力扩散方程，达西速度从压力场导出
 """
 
 import logging
@@ -29,9 +30,9 @@ class MultiphysicsGroutingSimulation:
     多物理场耦合注浆模拟器主控制器
     """
 
-    def __init__(self, config_file: str = "Dynamic/config/grouting_config.yaml",
-                 mesh_file: str = "Dynamic/meshes/foundation_drilling_model.msh",
-                 output_dir: str = "Dynamic/results"):
+    def __init__(self, config_file: str = "config/grouting_config.yaml",
+                 mesh_file: str = "meshes/foundation_drilling_model.msh",
+                 output_dir: str = "results"):
         """
         初始化模拟器
 
@@ -40,20 +41,29 @@ class MultiphysicsGroutingSimulation:
             mesh_file: Gmsh网格文件路径
             output_dir: 结果输出目录
         """
+
+        # 获取当前脚本所在目录（即 src 文件夹）
+        script_dir = Path(__file__).parent.resolve()
+        # 项目根目录为 src 的父目录（即 Dynamic 文件夹）
+        project_root = script_dir.parent
+
+        # 将传入的路径（相对路径）转换为基于项目根目录的绝对路径
+        self.config_file = project_root / config_file
+        self.mesh_file = project_root / mesh_file
+        self.output_dir = project_root / output_dir
+        
         # MPI设置
         self.comm = MPI.COMM_WORLD
         self.rank = self.comm.Get_rank()
         self.size = self.comm.Get_size()
 
-        # 文件路径
-        self.config_file = Path(config_file)
-        self.mesh_file = Path(mesh_file)
-        self.output_dir = Path(output_dir)
-
         # 模拟状态
         self.time = 0.0
         self.time_step = 0
         self.converged = True
+
+        # 模块初始化状态
+        self._modules_initialized = False
 
         # 配置字典（将在 _load_configuration 中填充）
         self.config = None
@@ -248,6 +258,12 @@ class MultiphysicsGroutingSimulation:
     # ------------------------------------------------------------------
     def _initialize_modules(self):
         """按顺序初始化所有计算模块"""
+        # 避免重复初始化
+        if self._modules_initialized:
+            if self.rank == 0:
+                self.logger.info("模块已初始化，跳过重复初始化")
+            return
+
         if self.rank == 0:
             self.logger.info("开始初始化各模块...")
 
@@ -275,6 +291,9 @@ class MultiphysicsGroutingSimulation:
 
             # 8. 输出管理器
             self._initialize_output_manager()
+
+            # 标记为已初始化
+            self._modules_initialized = True
 
             if self.rank == 0:
                 self.logger.info("所有模块初始化完成")
@@ -310,7 +329,7 @@ class MultiphysicsGroutingSimulation:
         )
 
     def _initialize_function_spaces(self):
-        """创建混合函数空间 [u, p, phi, c, q]"""
+        """创建混合函数空间 [u, p, phi, c]"""
         gdim = self.mesh.geometry.dim
 
         # 使用 basix 创建有限元（新版 DOLFINx API）
@@ -322,12 +341,12 @@ class MultiphysicsGroutingSimulation:
         # 标量元素（用于 p, phi, c）
         P1 = basix.ufl.element("Lagrange", cell_type, 1, shape=())
 
-        # 向量元素（用于 u, q）
+        # 向量元素（用于 u）
         P1_vec = basix.ufl.element("Lagrange", cell_type, 1, shape=(gdim,))
 
         # 创建混合元素
         from basix.ufl import mixed_element as create_mixed_element
-        mixed_element = create_mixed_element([P1_vec, P1, P1, P1, P1_vec])
+        mixed_element = create_mixed_element([P1_vec, P1, P1, P1])
 
         # 新版 DOLFINx API 使用 functionspace
         self.W = fem.functionspace(self.mesh, mixed_element)
@@ -337,15 +356,14 @@ class MultiphysicsGroutingSimulation:
         self.solution_prev = fem.Function(self.W, name="Solution_previous")
 
         # 提取各场分量（用于方便访问）
-        self.u, self.p, self.phi, self.c, self.q = ufl.split(self.solution)
-        self.u_n, self.p_n, self.phi_n, self.c_n, self.q_n = ufl.split(self.solution_prev)
+        self.u, self.p, self.phi, self.c = ufl.split(self.solution)
+        self.u_n, self.p_n, self.phi_n, self.c_n = ufl.split(self.solution_prev)
 
         self.fields = {
             'displacement': self.u,
             'pressure': self.p,
             'porosity': self.phi,
-            'concentration': self.c,
-            'darcy_velocity': self.q
+            'concentration': self.c
         }
 
         # 设置初始条件
@@ -356,19 +374,16 @@ class MultiphysicsGroutingSimulation:
             self.logger.info(f"函数空间: {dof_count} 个自由度")
 
     def _set_initial_conditions(self):
-        """设置初始条件（孔隙度均匀 phi0，其余为零）"""
         phi0 = self.config['materials']['soil']['phi0']
 
-        # 孔隙度
-        phi_func = self.solution.sub(2).collapse()
-        phi_func.x.array[:] = phi0
-        self.solution_prev.sub(2).collapse().x.array[:] = phi0
+        # 直接对混合函数的子空间视图赋值
+        self.solution.sub(2).x.array[:] = phi0
+        self.solution_prev.sub(2).x.array[:] = phi0
 
         # 其他场设为零
-        for idx in [0, 1, 3, 4]:
-            f = self.solution.sub(idx).collapse()
-            f.x.array[:] = 0.0
-            self.solution_prev.sub(idx).collapse().x.array[:] = 0.0
+        for idx in [0, 1, 3]:
+            self.solution.sub(idx).x.array[:] = 0.0
+            self.solution_prev.sub(idx).x.array[:] = 0.0
 
         if self.rank == 0:
             self.logger.info("初始条件设置完成")
@@ -430,15 +445,16 @@ class MultiphysicsGroutingSimulation:
         计算当前注入率 (L/min)
         通过对注浆孔边界上的浆液通量积分得到
         注：1 m³/s = 60000 L/min
+        使用从压力导出的达西速度 q_darcy = -(k/μ)(∇p - ρg)
         """
         if self.solution is None or self.bc_manager is None:
             return 0.0
 
-        # 获取浓度场和达西速度场（已 collapsed 到独立空间）
-        c = self.solution.sub(3).collapse()
-        q = self.solution.sub(4).collapse()
+        # 获取浓度场
+        c_func = self.solution.sub(3).collapse()
+        p_func = self.solution.sub(1).collapse()
+        phi_func = self.solution.sub(2).collapse()
 
-        # 获取注浆孔边界的面标记（边界管理器需提供此方法，我们临时实现）
         # 从边界几何中获取所有注浆孔的面
         inlet_facets = []
         for name, info in self.bc_manager.boundary_geometries.items():
@@ -452,22 +468,29 @@ class MultiphysicsGroutingSimulation:
 
         # 定义边界测量
         fdim = self.mesh.topology.dim - 1
-        ds = ufl.Measure("ds", domain=self.mesh, subdomain_data=self.facet_tags)
 
-        # 我们需要将 inlet_facets 与 facet_tags 关联，但 facet_tags 已经有标记
-        # 简便做法：创建临时标记
+        # 创建临时标记
         from dolfinx.mesh import meshtags
-        inlet_marker = 1000  # 临时标记
+        inlet_marker = 1000
         inlet_meshtags = meshtags(self.mesh, fdim, inlet_facets, np.full(len(inlet_facets), inlet_marker, dtype=np.int32))
-
-        # 重新定义 ds 使用这个临时 meshtags
-        ds_inlet = ufl.Measure("ds", domain=self.mesh, subdomain_data=inlet_meshtags)
 
         # 法向向量
         n = ufl.FacetNormal(self.mesh)
 
-        # 积分：c * (q·n) 在注浆孔边界上
-        flux_form = fem.form(c * ufl.dot(q, n) * ds_inlet(inlet_marker))
+        # 获取当前时间的材料属性
+        k = self.materials.calculate_permeability(phi_func)
+        mu = self.materials.calculate_viscosity(c_func, self.time)
+        rho = self.materials.calculate_density(c_func)
+        g = self.materials.g
+
+        # 计算达西速度：q_darcy = -(k/μ)(∇p - ρg)
+        q_darcy = -(k / mu) * (ufl.grad(p_func) - rho * g)
+
+        # 定义积分测量
+        ds_inlet = ufl.Measure("ds", domain=self.mesh, subdomain_data=inlet_meshtags)
+
+        # 积分：c * (q_darcy·n) 在注浆孔边界上
+        flux_form = fem.form(c_func * ufl.dot(q_darcy, n) * ds_inlet(inlet_marker))
         flux = fem.assemble_scalar(flux_form)
 
         # 转换为 L/min (假设单位：m³/s -> L/min)
@@ -659,13 +682,23 @@ class MultiphysicsGroutingSimulation:
 if __name__ == "__main__":
     import argparse
     import os
+    import pathlib
+
+    # 禁用 HDF5 文件锁定（避免在 MPI 环境中的文件锁问题）
+    os.environ['HDF5_USE_FILE_LOCKING'] = 'FALSE'
+
+    # 获取脚本所在目录，作为相对路径的基准
+    script_dir = pathlib.Path(__file__).resolve().parent.parent
+    default_config = str(script_dir / "config" / "grouting_config.yaml")
+    default_mesh = str(script_dir / "meshes" / "foundation_drilling_model.msh")
+    default_output = str(script_dir / "results")
 
     parser = argparse.ArgumentParser(description="多物理场注浆模拟")
-    parser.add_argument("--config", type=str, default="Dynamic/config/grouting_config.yaml",
+    parser.add_argument("--config", type=str, default=default_config,
                         help="配置文件路径")
-    parser.add_argument("--mesh", type=str, default="Dynamic/meshes/foundation_drilling_model.msh",
+    parser.add_argument("--mesh", type=str, default=default_mesh,
                         help="网格文件路径")
-    parser.add_argument("--output", type=str, default="Dynamic/results",
+    parser.add_argument("--output", type=str, default=default_output,
                         help="输出目录路径")
     parser.add_argument("--time", type=float, default=None,
                         help="总模拟时间（秒）")

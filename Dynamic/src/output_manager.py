@@ -55,14 +55,40 @@ class OutputManager:
 
     def _initialize_files(self):
         """初始化 XDMF 输出文件"""
+        import os
         try:
             # 主文件：主要物理场
             main_path = self.output_dir / "results" / "main_results.xdmf"
+            h5_main_path = self.output_dir / "results" / "main_results.h5"
+            
+            # 衍生文件：衍生量
+            derived_path = self.output_dir / "results" / "derived_fields.xdmf"
+            h5_derived_path = self.output_dir / "results" / "derived_fields.h5"
+            
+            # 确保文件不存在（清理旧的）
+            for fpath in [main_path, h5_main_path, derived_path, h5_derived_path]:
+                if fpath.exists():
+                    try:
+                        fpath.unlink()
+                    except Exception:
+                        pass
+            
+            # 确保没有锁文件
+            for fpath in [h5_main_path, h5_derived_path]:
+                lock_path = Path(str(fpath) + ".lock")
+                if lock_path.exists():
+                    try:
+                        lock_path.unlink()
+                    except Exception:
+                        pass
+            
+            # 同步所有进程
+            self.comm.Barrier()
+            
+            # 创建 XDMF 文件
             self.main_file = io.XDMFFile(self.comm, str(main_path), "w")
             self.main_file.write_mesh(self.mesh)
 
-            # 衍生文件：衍生量
-            derived_path = self.output_dir / "results" / "derived_fields.xdmf"
             self.derived_file = io.XDMFFile(self.comm, str(derived_path), "w")
             self.derived_file.write_mesh(self.mesh)
 
@@ -83,12 +109,12 @@ class OutputManager:
         Returns:
             索引或 None
         """
+        # 4场系统：[位移, 压力, 孔隙度, 浓度]
         field_mapping = {
             'displacement': 0,
             'pressure': 1,
             'porosity': 2,
-            'concentration': 3,
-            'darcy_velocity': 4
+            'concentration': 3
         }
         return field_mapping.get(field_name)
 

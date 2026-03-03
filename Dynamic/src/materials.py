@@ -139,16 +139,18 @@ class MaterialProperties:
         rho_f = c * self.rho_g + (1 - c) * self.rho_w
         # 整体密度
         return (1 - phi) * self.rho_s + phi * rho_f
-    
-    def calculate_filtration_rate(self, c, q_w):
-        """过滤定律：ȯn = λ_f * c * |q_w|"""
-        q_mag = ufl.sqrt(ufl.dot(q_w, q_w) + 1e-10)
-        return self.lambda_f * c * q_mag
-    
-    def darcy_velocity(self, p, phi, c, time=None):
+
+    # 注：4场系统中不再使用过滤速率，因为达西速度q不再是独立未知量
+    # def calculate_filtration_rate(self, c, q):
+    #     """过滤定律：ȯn = λ_f * c * |q|"""
+    #     q_mag = ufl.sqrt(ufl.dot(q, q) + 1e-10)
+    #     return self.lambda_f * c * q_mag
+
+    def calculate_darcy_velocity(self, p, phi, c, time=None):
         """
-        达西定律表达式：q_w = - (k/μ) * (∇p - ρ g)
+        达西定律表达式：q = - (k/μ) * (∇p - ρ g)
         注意：g 方向向下为正，∇p - ρg 在重力向下时正确
+        这个函数用于从压力场导出达西速度（用于后处理或输运方程）
         """
         k = self.calculate_permeability(phi)
         mu = self.calculate_viscosity(c, time)
@@ -178,6 +180,38 @@ class MaterialProperties:
     def biot_coefficient(self):
         """返回Biot系数 α"""
         return self.alpha
+
+    # ---------- 解耦求解器专用方法 ----------
+    
+    def get_default_porosity(self):
+        """返回默认孔隙率（用于简化模型）"""
+        return self.phi0
+
+    def calculate_permeability_scalar(self, phi):
+        """
+        计算标量渗透率（用于解耦求解器）
+        k = k0 * (φ^3) / (1-φ)^2
+        """
+        denominator = (1 - phi)**2 + 1e-10
+        return self.k0 * (phi**3) / denominator
+
+    def calculate_viscosity_scalar(self, c, time=None):
+        """
+        计算标量粘度（用于解耦求解器）
+        μ = c * μ_g(t) + (1-c) * μ_w
+        """
+        current_time = time if time is not None else self._current_time
+        mu_g = self.mu_g0 * np.exp(self.xi * current_time)
+        return c * mu_g + (1 - c) * self.mu_w
+
+    def stress_tensor_linear(self, u):
+        """
+        计算线性应力张量（小变形）
+        σ = λ tr(ε) I + 2 μ ε
+        """
+        epsilon = ufl.sym(ufl.grad(u))
+        lambda_, mu = self.get_lame_parameters()
+        return lambda_ * ufl.tr(epsilon) * ufl.Identity(len(u)) + 2 * mu * epsilon
     
     # ---------- 时间相关属性 ----------
     
@@ -200,25 +234,23 @@ class MaterialProperties:
         return updated_props
     
     # ---------- 衍生场计算 ----------
-    
+
     def calculate_all_derived(self, solution_fields, time):
         """计算所有衍生物理场（表达式形式）"""
         derived = {}
         try:
             phi = solution_fields.get('porosity')
             c = solution_fields.get('concentration')
-            q_w = solution_fields.get('darcy_velocity')
-            
+            p = solution_fields.get('pressure')
+
             if phi is not None:
                 derived['permeability'] = self.calculate_permeability(phi)
             if c is not None:
                 derived['viscosity'] = self.calculate_viscosity(c, time)
                 derived['density'] = self.calculate_density(c)
-            if c is not None and q_w is not None:
-                derived['filtration_rate'] = self.calculate_filtration_rate(c, q_w)
-            if 'pressure' in solution_fields and phi is not None and c is not None:
-                p = solution_fields['pressure']
-                derived['darcy_velocity_calc'] = self.darcy_velocity(p, phi, c, time)
+            # 4场系统中：从压力场导出达西速度
+            if p is not None and phi is not None and c is not None:
+                derived['darcy_velocity'] = self.calculate_darcy_velocity(p, phi, c, time)
         except Exception as e:
             self.logger.warning(f"计算衍生场时出错: {e}")
         return derived

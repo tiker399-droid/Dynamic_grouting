@@ -2,10 +2,10 @@
 # 坐标系：竖直向上为正，重力加速度 9.81 m/s² 方向向下
 
 simulation:
-  total_time: 7200.0                # 总模拟时间 (秒)，2小时
-  dt_initial: 1.0                   # 初始时间步长 (秒)
-  dt_min: 0.01                      # 最小时间步长 (秒)
-  dt_max: 60.0                      # 最大时间步长 (秒)
+  total_time: 5.0                # 总模拟时间 (秒)，2小时
+  dt_initial: 0.1                   # 初始时间步长 (秒)
+  dt_min: 0.001                      # 最小时间步长 (秒)
+  dt_max: 1.0                       # 最大时间步长 (秒)
   save_frequency: 10                # 结果保存频率（每 N 步）
   max_steps: 10000                   # 最大时间步数
   tolerance: 1e-6                    # 全局收敛容差
@@ -44,12 +44,12 @@ geometry:
 
 solver:
   type: "newton"                         # 求解器类型
-  max_iterations: 20                      # 非线性最大迭代次数
-  relative_tolerance: 1e-6                # 相对容差
-  absolute_tolerance: 1e-8                # 绝对容差
-  linear_solver: "mumps"                  # 线性求解器 ("mumps" 或 "gmres")
-  preconditioner: "ilu"                   # 预条件子（当 linear_solver 为 "gmres" 时使用）
-  report_convergence: false                # 是否输出详细收敛信息
+  max_iterations: 5                      # 非线性最大迭代次数
+  relative_tolerance: 1e-3                # 相对容差
+  absolute_tolerance: 1e-5                # 绝对容差
+  linear_solver: "cg"                    # 线性求解器 ("mumps", "gmres", "cg")
+  preconditioner: "jacobi"                # 预条件子（当 linear_solver 为 "gmres" 时使用）
+  report_convergence: true                # 是否输出详细收敛信息
 
 output:
   format: "xdmf"                          # 输出格式
@@ -58,7 +58,6 @@ output:
     - "pressure"
     - "porosity"
     - "concentration"
-    - "darcy_velocity"
   write_frequency: 10                      # 写入频率（每 N 步）
   monitor_frequency: 100                    # 监控信息输出频率（每 N 步）
 
