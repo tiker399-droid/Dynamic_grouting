@@ -12,6 +12,7 @@ import logging
 from typing import List, Dict, Any, Tuple, Optional, Callable
 from enum import Enum
 from pathlib import Path
+from time_stepping import GroutingStage
 
 
 class BoundaryType(Enum):
@@ -28,13 +29,6 @@ class PressureEvolutionMode(Enum):
     PULSE = "pulse"                         # 脉冲注浆（周期性）
     CONSTANT = "constant"                    # 恒定压力（用于测试）
 
-
-class GroutingStage(Enum):
-    """注浆阶段枚举（与时间步进控制器同步）"""
-    BEFORE_GROUTING = "before_grouting"
-    PRESSURE_RISING = "pressure_rising"
-    PRESSURE_STEADY = "pressure_steady"
-    AFTER_GROUTING = "after_grouting"
 
 
 class DynamicBoundaryConditionsManager:
@@ -137,6 +131,9 @@ class DynamicBoundaryConditionsManager:
         self.pulse_period = grout_config.get('pulse_period', 60.0)
         self.pulse_duty_cycle = grout_config.get('pulse_duty_cycle', 0.5)
 
+        # 标记：4场系统，达西速度从压力导出
+        self.four_field_system = True
+
         # 几何参数
         self.foundation_height = geom_config.get('height', 13.0)          # m
         self.drill_depth = geom_config.get('depth', 10.0)                 # m
@@ -155,8 +152,7 @@ class DynamicBoundaryConditionsManager:
             'displacement': self.W.sub(0),
             'pressure': self.W.sub(1),
             'porosity': self.W.sub(2),
-            'concentration': self.W.sub(3),
-            'darcy_velocity': self.W.sub(4)
+            'concentration': self.W.sub(3)
         }
 
     # ------------------------------------------------------------------
@@ -177,9 +173,14 @@ class DynamicBoundaryConditionsManager:
         identified = set()   # 已标记的面，避免重复
 
         # 1. 读取 gmsh 标记的边界（假设标记 101~107）
+        drill_facets = None
         for marker in range(101, 108):
             facets = self.facet_tags.find(marker)
             if facets.shape[0] > 0:
+                if marker == 101:
+                    # 钻孔壁面，稍后用于注浆孔识别
+                    drill_facets = facets
+                    continue
                 self.boundary_geometries[f'marker_{marker}'] = {
                     'facets': facets,
                     'type': 'marked',
@@ -207,8 +208,7 @@ class DynamicBoundaryConditionsManager:
             identified.update(top_facets)
 
         # 3. 识别注浆孔位置（在钻孔壁面上）
-        if 'marker_101' in self.boundary_geometries:
-            drill_facets = self.boundary_geometries['marker_101']['facets']
+        if drill_facets is not None:
             self._identify_grout_inlets(drill_facets, facet_geom, facet_to_vertex, identified)
 
         # 记录识别结果
@@ -397,7 +397,7 @@ class DynamicBoundaryConditionsManager:
         """更新注浆孔压力边界条件（根据 self.time）"""
         if self.time_controller is not None:
             stage = self.time_controller.grouting_stage
-            if stage == GroutingStage.AFTER_GROUTING:
+            if stage == GroutingStage.COMPLETED:
                 current_pressure = 0.0
             else:
                 current_pressure = self.pressure_func(self.time)
@@ -506,6 +506,120 @@ class DynamicBoundaryConditionsManager:
     def get_boundary_conditions(self) -> List:
         """返回当前有效的狄利克雷边界条件列表"""
         return self.bcs
+
+    # ------------------------------------------------------------------
+    # 解耦求解器专用方法
+    # ------------------------------------------------------------------
+    def get_pressure_bcs(self) -> List:
+        """返回压力边界条件列表（用于解耦求解器）"""
+        bcs_p = []
+        fdim = self.mesh.topology.dim - 1
+        V_p = self.subspaces['pressure']
+
+        # 1. 顶部零压力
+        if 'top' in self.boundary_geometries:
+            facets = self.boundary_geometries['top']['facets']
+            V_p_collapsed, p_to_parent = V_p.collapse()
+            zero_func = fem.Function(V_p_collapsed)
+            zero_func.x.array[:] = 0.0
+            dofs = fem.locate_dofs_topological(V_p, fdim, facets)
+            bc = fem.dirichletbc(zero_func, dofs)
+            bcs_p.append(bc)
+
+        # 2. 侧面静水压力
+        V_p_collapsed, p_to_parent = V_p.collapse()
+        water_pressure_func = fem.Function(V_p_collapsed)
+        water_pressure_func.interpolate(lambda x: self.water_density * self.gravity * (self.foundation_height - x[2]))
+
+        side_markers = ['marker_103', 'marker_104', 'marker_105', 'marker_106']
+        for marker in side_markers:
+            if marker in self.boundary_geometries:
+                facets = self.boundary_geometries[marker]['facets']
+                if facets.shape[0] > 0:
+                    dofs = fem.locate_dofs_topological(V_p, fdim, facets)
+                    bc = fem.dirichletbc(water_pressure_func, dofs)
+                    bcs_p.append(bc)
+
+        # 3. 注浆孔压力
+        current_pressure = self.pressure_func(self.time)
+        if current_pressure > 0:
+            grout_inlets = [name for name in self.boundary_geometries.keys()
+                            if name.startswith('grout_inlet_')]
+            if not grout_inlets and 'grout_inlet_fallback' in self.boundary_geometries:
+                grout_inlets = ['grout_inlet_fallback']
+
+            V_p_collapsed, p_to_parent = V_p.collapse()
+            pressure_func = fem.Function(V_p_collapsed)
+            pressure_func.x.array[:] = current_pressure
+
+            for inlet_name in grout_inlets:
+                facets = self.boundary_geometries[inlet_name]['facets']
+                if facets.shape[0] > 0:
+                    dofs = fem.locate_dofs_topological(V_p, fdim, facets)
+                    bc = fem.dirichletbc(pressure_func, dofs)
+                    bcs_p.append(bc)
+
+        return bcs_p
+
+    def get_displacement_bcs(self) -> List:
+        """返回位移边界条件列表（用于解耦求解器）"""
+        bcs_u = []
+        fdim = self.mesh.topology.dim - 1
+        V_u = self.subspaces['displacement']
+
+        # 底面固定
+        if 'marker_107' in self.boundary_geometries:
+            facets = self.boundary_geometries['marker_107']['facets']
+            V_u_collapsed, u_to_parent = V_u.collapse()
+            zero_vec_func = fem.Function(V_u_collapsed)
+            zero_vec_func.x.array[:] = 0.0
+            dofs = fem.locate_dofs_topological(V_u, fdim, facets)
+            bc = fem.dirichletbc(zero_vec_func, dofs)
+            bcs_u.append(bc)
+
+        # 侧面法向约束
+        side_markers = [('marker_103', 0), ('marker_104', 0),
+                        ('marker_105', 1), ('marker_106', 1)]
+        for marker_name, comp in side_markers:
+            if marker_name in self.boundary_geometries:
+                facets = self.boundary_geometries[marker_name]['facets']
+                if facets.shape[0] > 0:
+                    V_comp = V_u.sub(comp)
+                    V_comp_collapsed, comp_to_parent = V_comp.collapse()
+                    zero_func = fem.Function(V_comp_collapsed)
+                    zero_func.x.array[:] = 0.0
+                    dofs = fem.locate_dofs_topological(V_comp, fdim, facets)
+                    bc = fem.dirichletbc(zero_func, dofs)
+                    bcs_u.append(bc)
+
+        return bcs_u
+
+    def get_concentration_bcs(self) -> List:
+        """返回浓度边界条件列表（用于解耦求解器）"""
+        bcs_c = []
+        fdim = self.mesh.topology.dim - 1
+        V_c = self.subspaces['concentration']
+
+        # 仅在注浆期间设置浓度边界
+        current_pressure = self.pressure_func(self.time)
+        if current_pressure > 0:
+            V_c_collapsed, c_to_parent = V_c.collapse()
+            conc_func = fem.Function(V_c_collapsed)
+            conc_func.x.array[:] = 1.0
+
+            grout_inlets = [name for name in self.boundary_geometries.keys()
+                            if name.startswith('grout_inlet_')]
+            if not grout_inlets and 'grout_inlet_fallback' in self.boundary_geometries:
+                grout_inlets = ['grout_inlet_fallback']
+
+            for inlet_name in grout_inlets:
+                facets = self.boundary_geometries[inlet_name]['facets']
+                if facets.shape[0] > 0:
+                    dofs = fem.locate_dofs_topological(V_c, fdim, facets)
+                    bc = fem.dirichletbc(conc_func, dofs)
+                    bcs_c.append(bc)
+
+        return bcs_c
 
     def get_boundary_info(self) -> Dict[str, Any]:
         """返回边界信息摘要"""

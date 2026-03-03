@@ -1,12 +1,19 @@
-[10:55:28 | Rank 98528 | INFO] 输入文件验证通过
-[10:55:28 | Rank 98528 | INFO] 配置文件加载成功
-[10:55:28 | Rank 98528 | INFO] 多物理场注浆模拟器初始化完成
-[10:55:28 | Rank 98528 | INFO] 进程数: 1
-[10:55:28 | Rank 98528 | INFO] 配置文件: /root/shared/Dynamic/config/grouting_config.yaml
-[10:55:28 | Rank 98528 | INFO] 网格文件: /root/shared/Dynamic/meshes/foundation_drilling_model.msh
-[10:55:28 | Rank 98528 | INFO] 输出目录: /root/shared/Dynamic/results
-[10:55:28 | Rank 98528 | INFO] 开始初始化各模块...
-[10:55:30 | Rank 98528 | INFO] 网格信息: 201335 个单元, 35399 个节点
-[10:55:30 | Rank 98528 | INFO] 初始条件设置完成
-[10:55:30 | Rank 98528 | INFO] 函数空间: 318591 个自由度
-[10:55:31 | Rank 98528 | INFO] 所有模块初始化完成
+[05:43:28 | Rank 1501 | INFO] 输入文件验证通过
+[05:43:28 | Rank 1501 | INFO] 配置文件加载成功
+[05:43:28 | Rank 1501 | INFO] 多物理场注浆模拟器初始化完成
+[05:43:28 | Rank 1501 | INFO] 进程数: 1
+[05:43:28 | Rank 1501 | INFO] 配置文件: /root/shared/Dynamic/config/grouting_config.yaml
+[05:43:28 | Rank 1501 | INFO] 网格文件: /root/shared/Dynamic/meshes/foundation_drilling_model.msh
+[05:43:28 | Rank 1501 | INFO] 输出目录: /root/shared/Dynamic/results
+[05:43:28 | Rank 1501 | INFO] ============================================================
+[05:43:28 | Rank 1501 | INFO] 开始多物理场注浆模拟
+[05:43:28 | Rank 1501 | INFO] ============================================================
+[05:43:28 | Rank 1501 | INFO] 开始初始化各模块...
+[05:43:31 | Rank 1501 | INFO] 网格信息: 201335 个单元, 35399 个节点
+[05:43:31 | Rank 1501 | INFO] 初始条件设置完成
+[05:43:31 | Rank 1501 | INFO] 函数空间: 212394 个自由度
+[05:43:33 | Rank 1501 | INFO] 所有模块初始化完成
+[05:43:33 | Rank 1501 | INFO] 总模拟时间: 5.0秒
+[05:43:33 | Rank 1501 | INFO] 最大时间步数: 10000
+[05:43:33 | Rank 1501 | INFO] 保存频率: 每 10 步
+[05:43:33 | Rank 1501 | INFO] 时间步 1: t=0.1s, dt=0.120s, 进度=2.4%

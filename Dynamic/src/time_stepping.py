@@ -262,7 +262,7 @@ class TimeStepManager:
         """根据压力和注入率判断阶段转移"""
         old_stage = self.grouting_stage
 
-        if self.grouting_stage == GroutingStage.BEFORE_GRORTING:
+        if self.grouting_stage == GroutingStage.BEFORE_GROUTING:
             if current_pressure > 0.01 * self.max_grouting_pressure:
                 self._transition_to_stage(GroutingStage.PRESSURE_RISING)
 

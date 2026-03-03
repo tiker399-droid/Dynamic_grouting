@@ -8,6 +8,7 @@ from dolfinx.fem.petsc import NonlinearProblem
 from dolfinx.nls.petsc import NewtonSolver
 from petsc4py import PETSc
 import numpy as np
+from dolfinx.fem.petsc import assemble_vector, assemble_matrix
 from typing import Optional, Dict, Any, Tuple, Callable
 import logging
 
@@ -67,104 +68,120 @@ class SolverManager:
             self.logger.info(f"  相对容差: {self.relative_tolerance:.1e}")
             self.logger.info(f"  线性求解器: {self.linear_solver}")
 
-    def solve(
-        self,
-        dt: float,
-        time: float,
-        solution: fem.Function,
-        solution_prev: fem.Function,
-        boundary_conditions=None,       # 保留参数，但实际从 bc_manager 获取
-        materials=None                   # 保留参数，便于未来扩展
-    ) -> Tuple[bool, int]:
-        """
-        求解当前时间步
-
-        Args:
-            dt: 时间步长
-            time: 当前时间
-            solution: 当前步解函数（将被更新）
-            solution_prev: 上一步解函数
-            boundary_conditions: 保留，兼容性
-            materials: 保留，兼容性
-
-        Returns:
-            (converged, iterations): 是否收敛，非线性迭代次数
-        """
-        # 获取当前边界条件
-        bcs = self.bc_manager.get_boundary_conditions()
-
-        # 构建当前时间步的弱形式（残差和雅可比）
-        try:
-            F_ufl, J_ufl = self.weak_form_builder.build_form(
-                dt, time, solution, solution_prev, boundary_conditions=bcs
-            )
-        except Exception as e:
-            self.logger.error(f"弱形式构建失败: {e}")
-            import traceback
-            self.logger.error(traceback.format_exc())
+    def solve(self, dt, time, solution, solution_prev, boundary_conditions=None, materials=None):
+        import numpy as np
+        arr = solution.x.array
+        if np.any(np.isnan(arr)) or np.any(np.isinf(arr)):
+            self.logger.error("Initial solution contains NaN/Inf!")
             return False, 0
+        else:
+            self.logger.info(f"Initial solution OK: min={arr.min():.3e}, max={arr.max():.3e}")
+        # 1. 强制清理旧的求解器和问题对象，帮助 Python GC 和 PETSc 释放资源
+        self.solver = None
+        self.problem = None
 
-        # 设置初始猜测（从上一步解开始）
+        # 2. 获取边界条件
+        bcs = self.bc_manager.get_boundary_conditions()
+        self.logger.info(f"获取到 {len(bcs)} 个边界条件")
+
+        # 3. 构建弱形式（你的现有代码）
+        print(f"Rank {self.rank}: Before building forms")
+        import sys; sys.stdout.flush()
+        F_ufl, J_ufl = self.weak_form_builder.build_form(
+            dt, time, solution, solution_prev, bcs)
+        print(f"Rank {self.rank}: After building forms")
+        sys.stdout.flush()
+        # 4. 设置初始猜测
         solution.x.array[:] = solution_prev.x.array[:]
 
-        # 创建非线性问题（使用 DOLFINx 0.9.0 内置的 NonlinearProblem）
-        try:
-            self.problem = NonlinearProblem(F_ufl, solution, bcs, J_ufl)
-        except Exception as e:
-            self.logger.error(f"问题创建失败: {e}")
-            import traceback
-            self.logger.error(traceback.format_exc())
+        # 5. **创建全新的 NonlinearProblem 和 NewtonSolver**
+        self.problem = NonlinearProblem(F_ufl, solution, bcs, J_ufl)
+        print(f"Rank {self.rank}: After creating NonlinearProblem")
+        sys.stdout.flush()
+        self.solver = NewtonSolver(self.comm, self.problem)
+
+        # 6. 设置求解器参数
+        self.solver.max_it = self.max_iterations
+        self.solver.rtol = self.relative_tolerance
+        self.solver.atol = self.absolute_tolerance
+
+        # 7. **重要：重新配置 KSP，避免继承旧选项**
+        ksp = self.solver.krylov_solver
+        opts = PETSc.Options()
+        # 使用唯一的选项前缀，避免不同求解器实例间的选项冲突
+        prefix = f"grouting_{time:.3f}_"  # 或用随机字符串
+        ksp.setOptionsPrefix(prefix)
+        opts.prefixPush(prefix)
+
+
+        # 设置线性求解器选项（保持你的原有逻辑）
+        if self.linear_solver == "mumps":
+            opts["ksp_type"] = "preonly"
+            opts["pc_type"] = "lu"
+            opts["pc_factor_mat_solver_type"] = "mumps"
+        elif self.linear_solver == "gmres":
+            opts["ksp_type"] = "gmres"
+            opts["ksp_gmres_restart"] = 30
+            opts["pc_type"] = self.preconditioner
+            opts["mg_levels_ksp_type"] = "chebyshev"
+            opts["mg_levels_pc_type"] = "jacobi"
+        elif self.linear_solver == "bcgs":
+            opts["ksp_type"] = "bcgs"
+            opts["pc_type"] = self.preconditioner
+            #opts["sub_pc_type"] = "ilu"
+            #opts["sub_pc_factor_levels"] = 0
+        else:
+            opts["ksp_type"] = "cg"
+            opts["pc_type"] = self.preconditioner
+
+        opts["ksp_monitor"] = None
+        opts["ksp_converged_reason"] = None
+        opts["ksp_rtol"] = 1e-8
+        opts["ksp_atol"] = 1e-12
+        opts["ksp_max_it"] = 10000
+        opts.prefixPop()
+        ksp.setFromOptions()
+        print(f"Rank {self.rank}: About to call solver.solve at time {time}")
+        import sys
+        sys.stdout.flush()   # 确保立即输出
+
+        # 手动组装残差向量
+        b = assemble_vector(self.problem.L)   # L 是残差形式
+        b.assemble()
+        b_array = b.getArray()
+        if np.any(np.isnan(b_array)):
+            nan_indices = np.where(np.isnan(b_array))[0]
+            self.logger.error(f"残差向量包含 NaN！索引：{nan_indices[:20]}")
+            # 保存到文件供分析
+            np.savetxt(f"residual_nan_rank{self.rank}.txt", b_array)
             return False, 0
+        else:
+            self.logger.info("残差向量正常（无 NaN/Inf）")
 
-        # 创建求解器
-        if self.solver is None:
-            self.solver = NewtonSolver(self.comm, self.problem)
+        # 手动组装雅可比矩阵
+        A = assemble_matrix(self.problem.a, bcs=bcs)   # a 是雅可比形式
+        A.assemble()
+        # 检查矩阵是否有 NaN（需通过向量方式检查对角元）
+        diag = A.getDiagonal()
+        diag_array = diag.getArray()
+        if np.any(np.isnan(diag_array)):
+            self.logger.error("雅可比矩阵对角元包含 NaN！")
+        if np.any(np.isinf(diag_array)):
+            self.logger.error("雅可比矩阵对角元包含 Inf！")
+        zero_diag = np.where(np.abs(diag_array) < 1e-12)[0]
+        if len(zero_diag) > 0:
+            self.logger.warning(f"雅可比矩阵有 {len(zero_diag)} 个零对角元，前10个：{zero_diag[:10]}")
 
-            # 设置求解器参数
-            self.solver.max_it = self.max_iterations
-            self.solver.rtol = self.relative_tolerance
-            self.solver.atol = self.absolute_tolerance
-
-            # 设置线性求解器
-            opts = PETSc.Options()
-            prefix = "grouting_"
-            self.solver.krylov_solver.setOptionsPrefix(prefix)
-            opts.prefixPush(prefix)
-
-            if self.linear_solver == "mumps":
-                opts["ksp_type"] = "preonly"
-                opts["pc_type"] = "lu"
-                opts["pc_factor_mat_solver_type"] = "mumps"
-            elif self.linear_solver == "gmres":
-                opts["ksp_type"] = "gmres"
-                opts["pc_type"] = self.preconditioner
-            else:
-                opts["ksp_type"] = "cg"
-                opts["pc_type"] = self.preconditioner
-
-            opts["ksp_rtol"] = 1e-8
-            opts["ksp_atol"] = 1e-12
-
-            opts.prefixPop()
-            self.solver.krylov_solver.setFromOptions()
-
-        # 求解
+        # 8. 求解
         try:
             n, converged = self.solver.solve(solution)
             self.iteration_counts.append(n)
-
-            if self.report_convergence and self.rank == 0:
-                self.logger.debug(
-                    f"时间步 {time:.2f}s, dt={dt:.3e}, "
-                    f"迭代次数: {n}, 收敛: {converged}"
-                )
-
             return converged, n
-
         except Exception as e:
             self.logger.error(f"求解器异常: {e}")
+            print(f"Rank {self.rank}: Exception during solver.solve: {e}")
             import traceback
-            self.logger.error(traceback.format_exc())
+            traceback.print_exc()
             return False, 0
 
     def get_statistics(self) -> Dict[str, Any]:

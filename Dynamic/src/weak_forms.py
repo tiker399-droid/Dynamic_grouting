@@ -1,8 +1,9 @@
 """
 弱形式构建器 - 多物理场耦合注浆模拟
 基于混合物理论的控制方程，使用混合有限元方法
-场顺序： [位移(u), 压力(p), 孔隙度(φ), 浓度(c), 达西速度(q)]
+场顺序： [位移(u), 压力(p), 孔隙度(φ), 浓度(c)]
 时间离散：向后欧拉（完全隐式）
+注：使用压力扩散方程，不再独立求解达西速度q
 """
 
 import ufl
@@ -38,8 +39,8 @@ class WeakFormBuilder:
         
         # 检查函数空间维度
         num_subspaces = self.W.num_sub_spaces
-        if num_subspaces != 5:
-            self.logger.warning(f"函数空间应有5个子空间，当前有{num_subspaces}个")
+        if num_subspaces != 4:
+            self.logger.warning(f"函数空间应有4个子空间，当前有{num_subspaces}个")
     
     def build_form(self, dt, time, solution, solution_prev, boundary_conditions):
         """
@@ -57,18 +58,21 @@ class WeakFormBuilder:
             J: 雅可比矩阵 (UFL 形式)
         """
         # --- 测试函数 ---
-        v_u, v_p, v_phi, v_c, v_q = ufl.TestFunctions(self.W)
-        
+        v_u, v_p, v_phi, v_c = ufl.TestFunctions(self.W)
+
         # --- 当前步未知函数 ---
-        u, p, phi, c, q = ufl.split(solution)
-        
+        u, p, phi, c = ufl.split(solution)
+
         # --- 上一步解 ---
-        u_n, p_n, phi_n, c_n, q_n = ufl.split(solution_prev)
+        u_n, p_n, phi_n, c_n = ufl.split(solution_prev)
         
         # --- 时间离散 ---
         # 土骨架速度 (向后欧拉)
         v_s = (u - u_n) / dt
-        
+
+        # 重力向量 (来自材料类，已定义为 fem.Constant)
+        g = self.mat.g
+
         # --- 材料属性 (使用当前步值) ---
         # 渗透率 k(φ)
         k = self.mat.calculate_permeability(phi)
@@ -77,66 +81,60 @@ class WeakFormBuilder:
         # 混合物密度 ρ(c)
         rho = self.mat.calculate_density(c)
         # 整体密度
-        rho_bulk = self.mat.calculate_bulk_density(phi, c)   
-        # 过滤速率 ^n = λ_f c |q|
-        n_hat = self.mat.calculate_filtration_rate(c, q)
-        
-        # 重力向量 (来自材料类，已定义为 fem.Constant)
-        g = self.mat.g
+        rho_bulk = self.mat.calculate_bulk_density(phi, c)
+
+        # --- 根据达西定律计算的等效流速场 (用于输运方程) ---
+        # q = -(k/μ)(∇p - ρg)
+        # 注意：这是从压力场导出的，不是独立未知量
+        q_darcy = -(k / mu) * (ufl.grad(p) - rho * g)
         
         # --- 动量平衡方程 (F_u) ---
         # 有效应力 σ'(u)
         sigma_eff = self.mat.effective_stress(u)
         # Biot系数 α
         alpha = self.mat.biot_coefficient()
-        
-        # 定义体积积分度量：如果提供了细胞标记，则只在地基区域（标记1）积分
-        if self.cell_tags is not None:
-            # 创建带子域的积分度量
-            dx = ufl.Measure("dx", domain=self.mesh, subdomain_data=self.cell_tags)
-            dx_domain = dx(1)  # 仅标记为1的区域（地基）
-        else:
-            dx_domain = ufl.dx  # 默认全区域积分
-        
+
+        # 定义体积积分度量：使用全区域积分，避免零对角元问题
+        # 如果需要只在地基区域积分，应该在材料属性中控制，而不是在积分度量中
+        dx_domain = ufl.dx  # 默认全区域积分
+
         # 弱形式：∫ σ' : ∇v_u dx - ∫ α p (∇·v_u) dx - ∫ ρ g · v_u dx = 0
         F_u = ufl.inner(sigma_eff, ufl.grad(v_u)) * dx_domain \
               - alpha * p * ufl.div(v_u) * dx_domain \
               - ufl.inner(rho_bulk * g, v_u) * dx_domain
         
         # --- 连续性方程 (F_p) ---
-        # ∇·q + ∇·v_s = 0
-        # 乘以测试函数 v_p，积分
-        F_p = (ufl.div(q) + ufl.div(v_s)) * v_p * dx_domain
+        # 使用原连续性方程: ∇·q + ∇·v_s = 0
+        # 但用达西定律替换q: q = -(k/μ)(∇p - ρg)
+        # 分部积分：-∫∇·[(k/μ)(∇p - ρg)] v_p dx = ∫ (k/μ)(∇p - ρg)·∇v_p dx - 边界项
+        # 边界项忽略（由BC处理），得到：
+        F_p = (ufl.div(v_s)) * v_p * dx_domain \
+              + ufl.inner((k / mu) * (ufl.grad(p) - rho * g), ufl.grad(v_p)) * dx_domain
         
         # --- 孔隙率演化方程 (F_phi) ---
-        # -∂φ/∂t + ∇·v_s - ∇·(φ v_s) = ^n
-        # 时间离散：- (φ - φ_n)/dt + ∇·v_s - ∇·(φ v_s) = ^n
+        # -∂φ/∂t + ∇·v_s - ∇·(φ v_s) = 0
+        # 时间离散：- (φ - φ_n)/dt + ∇·v_s - ∇·(φ v_s) = 0
         # 对 ∇·(φ v_s) 项分部积分：∫ -∇·(φ v_s) v_phi dx = ∫ φ v_s · ∇v_phi dx - ∫ φ v_s·n v_phi ds
         # 忽略边界项（由BC处理），得到：
         F_phi = (- (phi - phi_n) / dt * v_phi) * dx_domain \
                 + ufl.div(v_s) * v_phi * dx_domain \
-                + ufl.inner(phi * v_s, ufl.grad(v_phi)) * dx_domain \
-                - n_hat * v_phi * dx_domain
-        
+                + ufl.inner(phi * v_s, ufl.grad(v_phi)) * dx_domain
+
         # --- 浓度输运方程 (F_c) ---
-        # ∂(cφ)/∂t + ∇·(c q) + ∇·(c φ v_s) = -^n
-        # 时间离散： (cφ - c_n φ_n)/dt + ∇·(c q) + ∇·(c φ v_s) = -^n
-        # 对 ∇·(c q) 和 ∇·(c φ v_s) 分部积分：
-        # ∫ ∇·(c q) v_c dx = -∫ c q · ∇v_c dx + ∫ c q·n v_c ds
-        # ∫ ∇·(c φ v_s) v_c dx = -∫ c φ v_s · ∇v_c dx + ∫ c φ v_s·n v_c ds
+        # ∂(cφ)/∂t + ∇·(c q_darcy) + ∇·(c φ v_s) = 0
+        # 使用从压力导出的达西速度 q_darcy = -(k/μ)(∇p - ρg)
+        # 时间离散： (cφ - c_n φ_n)/dt + ∇·(c q_darcy) + ∇·(c φ v_s) = 0
+        # 对 ∇·(c q_darcy) 和 ∇·(c φ v_s) 分部积分：
         # 忽略边界项，得到：
+        # 添加人工扩散项 ε∇c·∇v_c 以避免雅可比矩阵零对角元
+        epsilon_diff = 1e-6  # 人工扩散系数
         F_c = ((c * phi - c_n * phi_n) / dt * v_c) * dx_domain \
-              - ufl.inner(c * q, ufl.grad(v_c)) * dx_domain \
+              - ufl.inner(c * q_darcy, ufl.grad(v_c)) * dx_domain \
               - ufl.inner(c * phi * v_s, ufl.grad(v_c)) * dx_domain \
-              + n_hat * v_c * dx_domain
-        
-        # --- 达西定律 (F_q) ---
-        # q + (k/μ)(∇p - ρ g) = 0
-        # 乘以向量测试函数 v_q
-        F_q = ufl.inner(q + (k / mu) * (ufl.grad(p) - rho * g), v_q) * dx_domain
-        
+              + epsilon_diff * ufl.dot(ufl.grad(c), ufl.grad(v_c)) * dx_domain
+
         # --- 总残差 ---
-        F = F_u + F_p + F_phi + F_c + F_q
+        F = F_u + F_p + F_phi + F_c
 
         # --- 雅可比矩阵 (自动微分) ---
         du = ufl.TrialFunction(self.W)
