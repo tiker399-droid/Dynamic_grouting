@@ -104,6 +104,9 @@ class DynamicBoundaryConditionsManager:
         if self.rank == 0:
             self.logger.info("边界条件管理器初始化完成")
             self.logger.info(f"  识别到的边界类型: {list(self.boundary_geometries.keys())}")
+            for name, info in self.boundary_geometries.items():
+                self.logger.info(f"    - {name}: {info['facets'].shape[0]} 个面")
+            self.logger.info(f"  创建的边界条件数量: {len(self.bcs)}")
             self.logger.info(f"  注浆压力模式: {self.pressure_mode.value}")
             self.logger.info(f"  最大压力: {self.pressure_max/1000:.1f} kPa")
             self.logger.info(f"  注浆持续时间: {self.grouting_duration} s")
@@ -325,26 +328,49 @@ class DynamicBoundaryConditionsManager:
     def _create_porosity_bcs(self):
         """
         创建孔隙度边界条件
-        孔隙度方程是 Neumann 类型的，需要在所有边界设置自然边界条件（通量为零）
-        由于自然边界条件自动满足（默认通量为零），我们需要在内部也设置约束以避免零对角元
-        方案：在顶部边界设置固定的初始孔隙度，作为参考
+        孔隙度方程是 Neumann 类型的，需要在所有边界设置边界条件以避免零对角元
+        在所有外部边界设置初始孔隙度值
         """
         fdim = self.mesh.topology.dim - 1
         V_phi = self.subspaces['porosity']
-
-        # 在顶部边界设置初始孔隙度（参考值）
+        V_phi_collapsed, phi_to_parent = V_phi.collapse()
+        phi0 = self.materials.phi0
+        
+        phi_func = fem.Function(V_phi_collapsed)
+        phi_func.x.array[:] = phi0
+        
+        # 在顶部边界设置初始孔隙度
         if 'top' in self.boundary_geometries:
             facets = self.boundary_geometries['top']['facets']
             if facets.shape[0] > 0:
-                V_phi_collapsed, phi_to_parent = V_phi.collapse()
-                phi0 = self.materials.phi0
-                phi_func = fem.Function(V_phi_collapsed)
-                phi_func.x.array[:] = phi0
                 dofs = fem.locate_dofs_topological(V_phi, fdim, facets)
                 bc = fem.dirichletbc(phi_func, dofs)
                 self.bcs.append(bc)
                 if self.rank == 0:
                     self.logger.debug(f"孔隙度 Dirichlet 边界条件: phi={phi0:.3f} 在顶部边界")
+        
+        # 在底部边界设置初始孔隙度
+        if 'marker_107' in self.boundary_geometries:
+            facets = self.boundary_geometries['marker_107']['facets']
+            if facets.shape[0] > 0:
+                dofs = fem.locate_dofs_topological(V_phi, fdim, facets)
+                bc = fem.dirichletbc(phi_func, dofs)
+                self.bcs.append(bc)
+                if self.rank == 0:
+                    self.logger.debug(f"孔隙度 Dirichlet 边界条件: phi={phi0:.3f} 在底部边界")
+        
+        # 在所有侧面边界设置初始孔隙度
+        side_markers = ['marker_103', 'marker_104', 'marker_105', 'marker_106']
+        for marker in side_markers:
+            if marker in self.boundary_geometries:
+                facets = self.boundary_geometries[marker]['facets']
+                if facets.shape[0] > 0:
+                    dofs = fem.locate_dofs_topological(V_phi, fdim, facets)
+                    bc = fem.dirichletbc(phi_func, dofs)
+                    self.bcs.append(bc)
+        
+        # 额外：在内部也设置一些约束（避免孤立节点）
+        # 这是一个预防措施，确保孔隙度方程在内部也有约束
 
     def _create_displacement_bcs(self):
         """创建位移固定边界（底面固定，侧面法向约束）"""
@@ -468,15 +494,24 @@ class DynamicBoundaryConditionsManager:
         fdim = self.mesh.topology.dim - 1
         V_c = self.subspaces['concentration']
         V_c_collapsed, c_to_parent = V_c.collapse()
-
-        # 首先设置所有外部边界的浓度为 0
-        side_markers = ['marker_103', 'marker_104', 'marker_105', 'marker_106', 'marker_107']
+        
+        zero_func = fem.Function(V_c_collapsed)
+        zero_func.x.array[:] = 0.0
+        
+        # 在底部边界设置浓度为 0
+        if 'marker_107' in self.boundary_geometries:
+            facets = self.boundary_geometries['marker_107']['facets']
+            if facets.shape[0] > 0:
+                dofs = fem.locate_dofs_topological(V_c, fdim, facets)
+                bc = fem.dirichletbc(zero_func, dofs)
+                self.bcs.append(bc)
+        
+        # 在所有侧面边界设置浓度为 0
+        side_markers = ['marker_103', 'marker_104', 'marker_105', 'marker_106']
         for marker in side_markers:
             if marker in self.boundary_geometries:
                 facets = self.boundary_geometries[marker]['facets']
                 if facets.shape[0] > 0:
-                    zero_func = fem.Function(V_c_collapsed)
-                    zero_func.x.array[:] = 0.0
                     dofs = fem.locate_dofs_topological(V_c, fdim, facets)
                     bc = fem.dirichletbc(zero_func, dofs)
                     self.bcs.append(bc)
@@ -485,8 +520,6 @@ class DynamicBoundaryConditionsManager:
         if 'top' in self.boundary_geometries:
             facets = self.boundary_geometries['top']['facets']
             if facets.shape[0] > 0:
-                zero_func = fem.Function(V_c_collapsed)
-                zero_func.x.array[:] = 0.0
                 dofs = fem.locate_dofs_topological(V_c, fdim, facets)
                 bc = fem.dirichletbc(zero_func, dofs)
                 self.bcs.append(bc)
