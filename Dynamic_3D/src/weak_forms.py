@@ -120,9 +120,12 @@ class WeakFormBuilder:
         # 时间离散：- (φ - φ_n)/dt + ∇·v_s - ∇·(φ v_s) = 0
         # 对 ∇·(φ v_s) 项分部积分：∫ -∇·(φ v_s) v_phi dx = ∫ φ v_s · ∇v_phi dx - ∫ φ v_s·n v_phi ds
         # 忽略边界项（由BC处理），得到：
+        # 添加人工扩散项 ε∇φ·∇v_phi 以避免雅可比矩阵零对角元
+        epsilon_diff_phi = 1e-8  # 人工扩散系数（孔隙度）
         F_phi = (- (phi - phi_n) / dt * v_phi) * dx_domain \
                 + ufl.div(v_s) * v_phi * dx_domain \
-                + ufl.inner(phi * v_s, ufl.grad(v_phi)) * dx_domain
+                + ufl.inner(phi * v_s, ufl.grad(v_phi)) * dx_domain \
+                + epsilon_diff_phi * ufl.dot(ufl.grad(phi), ufl.grad(v_phi)) * dx_domain
 
         # --- 浓度输运方程 (F_c) ---
         # ∂(cφ)/∂t + ∇·(c q_darcy) + ∇·(c φ v_s) = 0
