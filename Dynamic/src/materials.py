@@ -220,7 +220,7 @@ class MaterialProperties:
         更新时间相关的材料属性（主要是浆液粘度）
         """
         self._current_time = time
-        self._current_mu_g = self.mu_g0 * np.exp(self.xi * time)
+        self._current_mu_g = self.mu_g0 * np.exp(self.xi * time/60)
         
         updated_props = {
             'time': time,
