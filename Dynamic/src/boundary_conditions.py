@@ -304,7 +304,7 @@ class DynamicBoundaryConditionsManager:
     # 边界条件创建（内部方法）
     # ------------------------------------------------------------------
     def _create_initial_bcs(self):
-        """创建初始边界条件（位移固定边界 + 初始压力/浓度）"""
+        """创建初始边界条件（位移固定边界 + 初始压力/浓度 + 孔隙度边界）"""
         self.bcs.clear()
 
         # 1. 位移边界条件（不随时间变化）
@@ -313,11 +313,38 @@ class DynamicBoundaryConditionsManager:
         # 2. 压力边界条件（包括静水压力和注浆压力）
         self._create_pressure_bcs()
 
-        # 3. 浓度边界条件（注浆前无浓度边界）
+        # 3. 孔隙度边界条件（自然边界：通量为零）
+        self._create_porosity_bcs()
+
+        # 4. 浓度边界条件（注浆前无浓度边界）
         #   （在 update 中会根据注浆状态添加）
 
         if self.rank == 0:
             self.logger.info(f"初始边界条件创建完成，共 {len(self.bcs)} 个")
+
+    def _create_porosity_bcs(self):
+        """
+        创建孔隙度边界条件
+        孔隙度方程是 Neumann 类型的，需要在所有边界设置自然边界条件（通量为零）
+        由于自然边界条件自动满足（默认通量为零），我们需要在内部也设置约束以避免零对角元
+        方案：在顶部边界设置固定的初始孔隙度，作为参考
+        """
+        fdim = self.mesh.topology.dim - 1
+        V_phi = self.subspaces['porosity']
+
+        # 在顶部边界设置初始孔隙度（参考值）
+        if 'top' in self.boundary_geometries:
+            facets = self.boundary_geometries['top']['facets']
+            if facets.shape[0] > 0:
+                V_phi_collapsed, phi_to_parent = V_phi.collapse()
+                phi0 = self.materials.phi0
+                phi_func = fem.Function(V_phi_collapsed)
+                phi_func.x.array[:] = phi0
+                dofs = fem.locate_dofs_topological(V_phi, fdim, facets)
+                bc = fem.dirichletbc(phi_func, dofs)
+                self.bcs.append(bc)
+                if self.rank == 0:
+                    self.logger.debug(f"孔隙度 Dirichlet 边界条件: phi={phi0:.3f} 在顶部边界")
 
     def _create_displacement_bcs(self):
         """创建位移固定边界（底面固定，侧面法向约束）"""
@@ -431,17 +458,41 @@ class DynamicBoundaryConditionsManager:
         if self.rank == 0 and current_pressure > 0:
             self.logger.debug(f"注浆孔压力更新: {current_pressure/1000:.2f} kPa")
 
-    def _update_concentration_bcs(self):
-        """更新浓度边界条件（注浆期间设 c=1，否则自然边界）"""
+    def _create_concentration_bcs(self):
+        """
+        创建完整的浓度边界条件
+        - 在注浆孔边界设置 c=1（如果正在注浆）
+        - 在其他所有外部边界设置 c=0（自然边界，表示无浆液流入）
+        这样可以确保浓度场在所有节点上都有约束，避免雅可比矩阵零对角元
+        """
         fdim = self.mesh.topology.dim - 1
         V_c = self.subspaces['concentration']
+        V_c_collapsed, c_to_parent = V_c.collapse()
 
-        # 移除之前的浓度边界条件（如果有）
-        # 由于每次 update 都会重新创建所有边界，因此这里不需要单独移除
+        # 首先设置所有外部边界的浓度为 0
+        side_markers = ['marker_103', 'marker_104', 'marker_105', 'marker_106', 'marker_107']
+        for marker in side_markers:
+            if marker in self.boundary_geometries:
+                facets = self.boundary_geometries[marker]['facets']
+                if facets.shape[0] > 0:
+                    zero_func = fem.Function(V_c_collapsed)
+                    zero_func.x.array[:] = 0.0
+                    dofs = fem.locate_dofs_topological(V_c, fdim, facets)
+                    bc = fem.dirichletbc(zero_func, dofs)
+                    self.bcs.append(bc)
 
+        # 顶部边界也设为 0
+        if 'top' in self.boundary_geometries:
+            facets = self.boundary_geometries['top']['facets']
+            if facets.shape[0] > 0:
+                zero_func = fem.Function(V_c_collapsed)
+                zero_func.x.array[:] = 0.0
+                dofs = fem.locate_dofs_topological(V_c, fdim, facets)
+                bc = fem.dirichletbc(zero_func, dofs)
+                self.bcs.append(bc)
+
+        # 然后在注浆孔边界覆盖为 c=1（如果正在注浆）
         if self.current_values['is_grouting_active']:
-            # 注浆期间，在注浆孔施加 c=1
-            V_c_collapsed, c_to_parent = V_c.collapse()
             conc_func = fem.Function(V_c_collapsed)
             conc_func.x.array[:] = 1.0
 
@@ -459,10 +510,9 @@ class DynamicBoundaryConditionsManager:
 
             self.current_values['grouting_concentration'] = 1.0
             if self.rank == 0:
-                self.logger.debug("浓度边界已激活 (c=1)")
+                self.logger.debug("浓度边界已激活 (c=1 在注浆孔)")
         else:
             self.current_values['grouting_concentration'] = 0.0
-            # 不添加任何浓度边界，自然边界条件（通量为零）自动生效
 
     # ------------------------------------------------------------------
     # 公共方法
@@ -493,7 +543,8 @@ class DynamicBoundaryConditionsManager:
         self.bcs.clear()
         self._create_displacement_bcs()   # 位移不变
         self._create_pressure_bcs()       # 内部调用 _update_grouting_pressure_bcs
-        self._update_concentration_bcs()   # 浓度边界条件
+        self._create_porosity_bcs()        # 孔隙度边界条件
+        self._create_concentration_bcs()  # 浓度边界条件（完整的边界条件）
 
         # 日志（仅在时间变化显著时）
         if self.rank == 0 and abs(time - old_time) > 1e-6:

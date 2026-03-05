@@ -94,9 +94,13 @@ class WeakFormBuilder:
         # Biot系数 α
         alpha = self.mat.biot_coefficient()
 
-        # 定义体积积分度量：使用全区域积分，避免零对角元问题
-        # 如果需要只在地基区域积分，应该在材料属性中控制，而不是在积分度量中
-        dx_domain = ufl.dx  # 默认全区域积分
+         # 定义体积积分度量：如果提供了细胞标记，则只在地基区域（标记1）积分
+        if self.cell_tags is not None:
+            # 创建带子域的积分度量
+            dx = ufl.Measure("dx", domain=self.mesh, subdomain_data=self.cell_tags,metadata={"quadrature_degree": 2})
+            dx_domain = dx(1)  # 仅标记为1的区域（地基）
+        else:
+            dx_domain = ufl.dx  # 默认全区域积分
 
         # 弱形式：∫ σ' : ∇v_u dx - ∫ α p (∇·v_u) dx - ∫ ρ g · v_u dx = 0
         F_u = ufl.inner(sigma_eff, ufl.grad(v_u)) * dx_domain \
