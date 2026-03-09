@@ -327,7 +327,7 @@ class DynamicBoundaryConditionsManager:
             zero_vec_func = fem.Function(V_u_collapsed)
             zero_vec_func.x.array[:] = 0.0
             dofs = fem.locate_dofs_topological(V_u, fdim, facets)
-            print(f"底面位移边界: 找到 {len(dofs)} 个自由度", flush=True)  # 添加这行
+            #print(f"底面位移边界: 找到 {len(dofs)} 个自由度", flush=True)  # 添加这行
             bc = fem.dirichletbc(zero_vec_func, dofs)
             self.bcs.append(bc)
 
@@ -345,7 +345,7 @@ class DynamicBoundaryConditionsManager:
                     zero_func = fem.Function(V_comp_collapsed)
                     zero_func.x.array[:] = 0.0
                     dofs = fem.locate_dofs_topological(V_comp, fdim, facets)
-                    print(f"侧面位移边界: 找到 {len(dofs)} 个自由度", flush=True)  # 添加这行
+                    #print(f"侧面位移边界: 找到 {len(dofs)} 个自由度", flush=True)  # 添加这行
                     bc = fem.dirichletbc(zero_func, dofs)
                     self.bcs.append(bc)
 
@@ -366,7 +366,7 @@ class DynamicBoundaryConditionsManager:
             zero_func = fem.Function(V_p_collapsed)
             zero_func.x.array[:] = 0.0
             dofs = fem.locate_dofs_topological(V_p, fdim, facets)
-            print(f"顶部压力边界: 找到 {len(dofs)} 个自由度", flush=True)  # 添加这行
+            #print(f"顶部压力边界: 找到 {len(dofs)} 个自由度", flush=True)  # 添加这行
             bc = fem.dirichletbc(zero_func, dofs)
             self.bcs.append(bc)
 
@@ -390,7 +390,7 @@ class DynamicBoundaryConditionsManager:
                 facets = self.boundary_geometries[marker]['facets']
                 if facets.shape[0] > 0:
                     dofs = fem.locate_dofs_topological(V_p, fdim, facets)
-                    print(f"侧面压力边界: 找到 {len(dofs)} 个自由度", flush=True)  # 添加这行
+                    #print(f"侧面压力边界: 找到 {len(dofs)} 个自由度", flush=True)  # 添加这行
                     bc = fem.dirichletbc(water_pressure_func, dofs)
                     self.bcs.append(bc)
 
@@ -428,7 +428,7 @@ class DynamicBoundaryConditionsManager:
             facets = self.boundary_geometries[inlet_name]['facets']
             if facets.shape[0] > 0:
                 dofs = fem.locate_dofs_topological(V_p, fdim, facets)
-                print(f"注浆孔压力边界: 找到 {len(dofs)} 个自由度", flush=True)  # 添加这行
+                #print(f"注浆孔压力边界: 找到 {len(dofs)} 个自由度", flush=True)  # 添加这行
                 bc = fem.dirichletbc(pressure_func, dofs)
                 self.bcs.append(bc)
 

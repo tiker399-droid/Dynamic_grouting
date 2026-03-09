@@ -176,7 +176,7 @@ class SolverManager:
             self.logger.warning(f"雅可比矩阵有 {len(zero_diag)} 个零对角元,前10个:{zero_diag[:10]}")
         else:
             print("雅各比矩阵无零对角元")
-        
+
         # 8. 求解
         try:
             n, converged = self.solver.solve(solution)
