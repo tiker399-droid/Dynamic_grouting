@@ -162,6 +162,7 @@ class SolverManager:
         A = assemble_matrix(self.problem.a, bcs=bcs)   # a 是雅可比形式
         A.assemble()
         # 检查矩阵是否有 NaN（需通过向量方式检查对角元）
+
         diag = A.getDiagonal()
         diag_array = diag.getArray()
         if np.any(np.isnan(diag_array)):
