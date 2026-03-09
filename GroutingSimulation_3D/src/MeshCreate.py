@@ -246,7 +246,7 @@ def create_foundation_with_drill_hole():
     gmsh.model.mesh.optimize("Netgen", 0)
     
     # 保存网格文件
-    gmsh.write("GroutingSimulation/results/MeshCreate/foundation_drilling_model.msh")
+    gmsh.write("GroutingSimulation_3D/results/MeshCreate/foundation_drilling_model.msh")
     
     # 在GUI中显示网格（如果可用）
     if '-nopopup' not in sys.argv:
@@ -262,7 +262,7 @@ def import_mesh_to_fenicsx():
     
     # 读取Gmsh网格
     msh, cell_markers, facet_markers = gmshio.read_from_msh(
-        "GroutingSimulation/results/MeshCreate/foundation_drilling_model.msh", 
+        "GroutingSimulation_3D/results/MeshCreate/foundation_drilling_model.msh", 
         comm, 
         rank=0, 
         gdim=3
@@ -321,7 +321,7 @@ def visualize_with_pyvista(msh, cell_markers, facet_markers):
     plotter.camera.zoom(1.5)
     # 添加标题
     # plotter.add_title("Foundation with Drill Hole")
-    plotter.screenshot(f"GroutingSimulation/results/MeshCreate")
+    plotter.screenshot(f"GroutingSimulation_3D/results/MeshCreate")
     # 显示绘图
     plotter.show()
     
