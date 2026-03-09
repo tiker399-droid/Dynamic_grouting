@@ -89,6 +89,9 @@ class WeakFormBuilder:
         # q = -(k/μ)(∇p - ρg)
         q_darcy = -(k / mu) * (ufl.grad(p) - rho * g)
 
+        abs_q = ufl.sqrt(ufl.inner(q_darcy, q_darcy) + 1e-12)   # 加小量避免导数奇异
+        n_hat = self.mat.lambda_f_constant * c * abs_q          # λ_f * c * |q|
+
         # --- 定义积分度量 ---
         # 如果提供了细胞标记且包含标记1，则仅在地基区域（标记1）积分
         if self.cell_tags is not None:
@@ -121,21 +124,21 @@ class WeakFormBuilder:
               + ufl.inner((k / mu) * (ufl.grad(p) - rho * g), ufl.grad(v_p)) * dx_domain
         
         # --- 孔隙率演化方程 (F_phi) ---
-        # 添加人工扩散项 ε∇φ·∇v_phi 以避免雅可比矩阵零对角元
-        epsilon_diff_phi = 1e-8  # 人工扩散系数（孔隙度）
+        epsilon_diff_phi = 1e-6   # 原为 1e-8，增大至 1e-6
         F_phi = (- (phi - phi_n) / dt * v_phi) * dx_domain \
                 + ufl.div(v_s) * v_phi * dx_domain \
                 + ufl.inner(phi * v_s, ufl.grad(v_phi)) * dx_domain \
-                + epsilon_diff_phi * ufl.dot(ufl.grad(phi), ufl.grad(v_phi)) * dx_domain
+                + epsilon_diff_phi * ufl.dot(ufl.grad(phi), ufl.grad(v_phi)) * dx_domain \
+                - n_hat * v_phi * dx_domain      # 添加过滤源项（注意符号：方程中为 -n_hat）
 
         # --- 浓度输运方程 (F_c) ---
-        # 添加人工扩散项 ε∇c·∇v_c 以避免雅可比矩阵零对角元
-        epsilon_diff = 1e-6  # 人工扩散系数（浓度）
+        epsilon_diff = 1e-6        # 原为 1e-6，可保持不变或也增大（此处保持 1e-6）
         F_c = ((c * phi - c_n * phi_n) / dt * v_c) * dx_domain \
-              - ufl.inner(c * q_darcy, ufl.grad(v_c)) * dx_domain \
-              - ufl.inner(c * phi * v_s, ufl.grad(v_c)) * dx_domain \
-              + epsilon_diff * ufl.dot(ufl.grad(c), ufl.grad(v_c)) * dx_domain
-
+            - ufl.inner(c * q_darcy, ufl.grad(v_c)) * dx_domain \
+            - ufl.inner(c * phi * v_s, ufl.grad(v_c)) * dx_domain \
+            + epsilon_diff * ufl.dot(ufl.grad(c), ufl.grad(v_c)) * dx_domain \
+            + n_hat * v_c * dx_domain           # 添加过滤源项（符号：方程中为 +n_hat）
+        
         # --- 总残差 ---
         F = F_u + F_p + F_phi + F_c
 

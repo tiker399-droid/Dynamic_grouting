@@ -247,7 +247,7 @@ class DynamicBoundaryConditionsManager:
                 vertices = facet_to_vertex.links(facet)
                 center = np.mean(facet_geom[vertices], axis=0)
                 z = center[self.vert_axis]
-                if abs(z - target_z) < 0.02:          # 2cm 容差
+                if abs(z - target_z) < 0.05:          # 2cm 容差
                     inlet_facets.append(facet)
 
             if inlet_facets:
@@ -332,55 +332,43 @@ class DynamicBoundaryConditionsManager:
             self.logger.info(f"初始边界条件创建完成，共 {len(self.bcs)} 个")
 
     def _create_porosity_bcs(self):
-        """
-        创建孔隙度边界条件
-        在所有外部边界（包括钻孔壁面）设置初始孔隙度值，避免零对角元
-        """
-        fdim = self.mesh.topology.dim - 1
-        V_phi = self.subspaces['porosity']
-        V_phi_collapsed, phi_to_parent = V_phi.collapse()
-        phi0 = self.materials.phi0
+            """创建孔隙度边界条件：仅在远场边界固定 φ = φ0，钻孔附近自由演化"""
+            fdim = self.mesh.topology.dim - 1
+            V_phi = self.subspaces['porosity']
+            V_phi_collapsed, phi_to_parent = V_phi.collapse()
+            phi0 = self.materials.phi0
 
-        phi_func = fem.Function(V_phi_collapsed)
-        phi_func.x.array[:] = phi0
+            phi_func = fem.Function(V_phi_collapsed)
+            phi_func.x.array[:] = phi0
 
-        # 收集所有外部边界
-        boundary_facets = []
+            # 收集远场边界（底部、侧面、顶部）
+            boundary_facets = []
 
-        # 顶部边界
-        if 'top' in self.boundary_geometries:
-            boundary_facets.append(self.boundary_geometries['top']['facets'])
+            # 顶部边界
+            if 'top' in self.boundary_geometries:
+                boundary_facets.append(self.boundary_geometries['top']['facets'])
 
-        # 底部边界 (标记 107)
-        if 'marker_107' in self.boundary_geometries:
-            boundary_facets.append(self.boundary_geometries['marker_107']['facets'])
+            # 底部边界 (标记 107)
+            if 'marker_107' in self.boundary_geometries:
+                boundary_facets.append(self.boundary_geometries['marker_107']['facets'])
 
-        # 侧面边界 (标记 103,104,105,106 等)
-        side_markers = ['marker_103', 'marker_104', 'marker_105', 'marker_106']
-        for marker in side_markers:
-            if marker in self.boundary_geometries:
-                boundary_facets.append(self.boundary_geometries[marker]['facets'])
+            # 侧面边界 (标记 103, 104)
+            side_markers = ['marker_103', 'marker_104']
+            for marker in side_markers:
+                if marker in self.boundary_geometries:
+                    boundary_facets.append(self.boundary_geometries[marker]['facets'])
 
-        # 钻孔壁面 (标记 101,102,106 等)
-        drill_markers = ['marker_101', 'marker_102', 'marker_106']
-        for marker in drill_markers:
-            if marker in self.boundary_geometries:
-                boundary_facets.append(self.boundary_geometries[marker]['facets'])
+            # 对上述边界施加孔隙度 Dirichlet 条件
+            total_dofs = 0
+            for facets in boundary_facets:
+                if facets.shape[0] > 0:
+                    dofs = fem.locate_dofs_topological(V_phi, fdim, facets)
+                    bc = fem.dirichletbc(phi_func, dofs)
+                    self.bcs.append(bc)
+                    total_dofs += len(dofs)
 
-        # 注浆孔边界（如果已识别）
-        for name in self.boundary_geometries.keys():
-            if name.startswith('grout_inlet_') or name == 'grout_inlet_fallback':
-                boundary_facets.append(self.boundary_geometries[name]['facets'])
-
-        # 对所有边界施加相同的孔隙度 Dirichlet 条件
-        for facets in boundary_facets:
-            if facets.shape[0] > 0:
-                dofs = fem.locate_dofs_topological(V_phi, fdim, facets)
-                bc = fem.dirichletbc(phi_func, dofs)
-                self.bcs.append(bc)
-
-        if self.rank == 0:
-            self.logger.debug(f"孔隙度 Dirichlet 边界条件: phi={phi0:.3f} 在所有外部边界")
+            if self.rank == 0:
+                self.logger.info(f"孔隙度 Dirichlet 边界条件: φ={phi0:.3f} 施加于 {total_dofs} 个自由度")
 
     def _create_displacement_bcs(self):
         """创建位移固定边界（底面固定，侧面法向约束）"""

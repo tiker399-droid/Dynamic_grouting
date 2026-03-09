@@ -367,17 +367,30 @@ class MultiphysicsGroutingSimulation:
             self.logger.info(f"函数空间: {dof_count} 个自由度")
 
     def _set_initial_conditions(self):
+        # 原有孔隙度初始化
         phi0 = self.config['materials']['soil']['phi0']
-
         self.solution.sub(2).x.array[:] = phi0
         self.solution_prev.sub(2).x.array[:] = phi0
 
-        for idx in [0, 1, 3]:
+        # 初始化压力为静水压力
+        rho_w = self.materials.rho_w
+        g = self.materials.g_magnitude
+        H = self.config['geometry']['height']   # 地基高度，默认为13.0
+
+        # 插值函数：p = ρ_w g (H - y)   （二维 y 向上）
+        def hydrostatic_pressure(x):
+            return rho_w * g * (H - x[1])   # x[1] 即 y 坐标
+
+        self.solution.sub(1).interpolate(hydrostatic_pressure)
+        self.solution_prev.sub(1).interpolate(hydrostatic_pressure)
+
+        # 其他场初始化为0
+        for idx in [0, 3]:   # 位移和浓度保持0
             self.solution.sub(idx).x.array[:] = 0.0
             self.solution_prev.sub(idx).x.array[:] = 0.0
 
         if self.rank == 0:
-            self.logger.info("初始条件设置完成")
+            self.logger.info("初始条件设置完成：压力初始化为静水压力，孔隙度 φ0")
 
     def _initialize_boundary_conditions(self):
         """初始化边界条件管理器"""

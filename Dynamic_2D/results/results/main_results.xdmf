@@ -3,11 +3,11 @@
 <Xdmf Version="3.0" xmlns:xi="https://www.w3.org/2001/XInclude">
   <Domain>
     <Grid Name="mesh" GridType="Uniform">
-      <Topology TopologyType="Triangle" NumberOfElements="2609" NodesPerElement="3">
-        <DataItem Dimensions="2609 3" NumberType="Int" Format="HDF">main_results.h5:/Mesh/mesh/topology</DataItem>
+      <Topology TopologyType="Triangle" NumberOfElements="6738" NodesPerElement="3">
+        <DataItem Dimensions="6738 3" NumberType="Int" Format="HDF">main_results.h5:/Mesh/mesh/topology</DataItem>
       </Topology>
       <Geometry GeometryType="XY">
-        <DataItem Dimensions="1444 2" Format="HDF">main_results.h5:/Mesh/mesh/geometry</DataItem>
+        <DataItem Dimensions="3613 2" Format="HDF">main_results.h5:/Mesh/mesh/geometry</DataItem>
       </Geometry>
     </Grid>
   </Domain>
