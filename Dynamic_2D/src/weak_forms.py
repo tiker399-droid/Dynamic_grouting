@@ -11,6 +11,7 @@ import ufl
 from dolfinx import fem
 from mpi4py import MPI
 import logging
+import numpy as np
 
 class WeakFormBuilder:
     """
@@ -35,6 +36,10 @@ class WeakFormBuilder:
         self.fields = fields or {}
         self.cell_tags = cell_tags
         self.mesh = function_space.mesh  # 从函数空间获取网格
+        self.rank = 0
+        self.cell_tags = cell_tags
+        if self.rank == 0 and cell_tags is not None:
+            print(f"Init: 接收到的标记数量 = {len(cell_tags.values)}") # 加这行确认
         
         # 日志
         self.logger = logging.getLogger(f"WeakFormBuilder_rank{MPI.COMM_WORLD.Get_rank()}")
@@ -43,7 +48,62 @@ class WeakFormBuilder:
         num_subspaces = self.W.num_sub_spaces
         if num_subspaces != 4:
             self.logger.warning(f"函数空间应有4个子空间，当前有{num_subspaces}个")
-    
+
+    def build_form(self, dt, time, solution, solution_prev, boundary_conditions):
+        v_u, v_p, v_phi, v_c = ufl.TestFunctions(self.W)
+        u, p, phi, c = ufl.split(solution)
+        u_n, p_n, phi_n, c_n = ufl.split(solution_prev)
+
+        # 土骨架速度
+        v_s = (u - u_n) / dt
+
+        # 重力向量
+        g = self.mat.g
+
+        # 使用常数代替 phi 和 c 的依赖，确保压力方程正确
+        phi_const = fem.Constant(self.mesh, self.mat.phi0)
+        c_const = fem.Constant(self.mesh, 0.0)
+
+        # 材料属性（基于常数）
+        k = self.mat.calculate_permeability(phi_const)
+        mu = self.mat.calculate_viscosity(c_const, time)
+        rho = self.mat.calculate_density(c_const)
+        rho_bulk = self.mat.calculate_bulk_density(phi_const, c_const)
+
+        # 达西速度（用于压力方程，但注意压力方程本身是扩散形式）
+        # 实际上在连续性方程中，我们用的是 ufl.inner((k/mu)*(grad(p)-rho*g), grad(v_p))
+        # 所以需要计算这个表达式
+        flux = (k / mu) * (ufl.grad(p) - rho * g)
+
+        # 定义积分度量（根据您的情况可以是 dx_domain）
+        dx_domain = ufl.dx  # 或使用带标记的 dx
+
+        # 动量平衡
+        sigma_eff = self.mat.effective_stress(u)
+        alpha = self.mat.biot_coefficient()
+
+        F_u = ufl.inner(sigma_eff, ufl.grad(v_u)) * dx_domain 
+        - ufl.inner(rho_bulk * g, v_u) * dx_domain \
+        - alpha * p * ufl.div(v_u) * dx_domain \
+            
+        # 连续性方程（压力扩散）
+        F_p = 1e3 * (ufl.div(v_s) * v_p * dx_domain \
+        + ufl.inner(flux, ufl.grad(v_p)) * dx_domain)
+
+        # 孔隙度方程：极弱扩散项，仅用于避免奇异
+        epsilon_weak = 1e-5
+        F_phi = epsilon_weak * ufl.dot(ufl.grad(phi), ufl.grad(v_phi)) * dx_domain
+
+        # 浓度方程：同样极弱扩散项
+        F_c = epsilon_weak * ufl.dot(ufl.grad(c), ufl.grad(v_c)) * dx_domain
+
+        # 总残差
+        F = F_u + F_p + F_phi + F_c
+        du = ufl.TrialFunction(self.W)
+        J = ufl.derivative(F, solution, du)
+
+        return F, J
+    '''
     def build_form(self, dt, time, solution, solution_prev, boundary_conditions):
         """
         构建当前时间步的残差形式和雅可比矩阵
@@ -151,7 +211,7 @@ class WeakFormBuilder:
             self.logger.debug(f"弱形式构建完成，时间={time:.2f}, dt={dt:.3e}")
 
         return F, J
-    
+    '''   
     def build_mass_matrix(self):
         """构建质量矩阵（可选）"""
         pass

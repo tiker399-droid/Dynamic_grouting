@@ -123,8 +123,6 @@ class SolverManager:
             opts["ksp_type"] = "gmres"
             opts["ksp_gmres_restart"] = 30
             opts["pc_type"] = self.preconditioner
-            opts["mg_levels_ksp_type"] = "chebyshev"
-            opts["mg_levels_pc_type"] = "jacobi"
         elif self.linear_solver == "bcgs":
             opts["ksp_type"] = "bcgs"
             opts["pc_type"] = self.preconditioner
@@ -136,9 +134,11 @@ class SolverManager:
 
         opts["ksp_monitor"] = None
         opts["ksp_converged_reason"] = None
-        opts["ksp_rtol"] = 1e-8
-        opts["ksp_atol"] = 1e-12
+        opts["ksp_rtol"] = 1e-6
+        opts["ksp_atol"] = 1e-8
         opts["ksp_max_it"] = 10000
+        opts["pc_factor_shift_type"] = "NONZERO"
+        opts["ksp_monitor_singular_value"] = None
         opts.prefixPop()
         ksp.setFromOptions()
         print(f"Rank {self.rank}: About to call solver.solve at time {time}")
@@ -149,9 +149,11 @@ class SolverManager:
         b = assemble_vector(self.problem.L)   # L 是残差形式
         b.assemble()
         b_array = b.getArray()
+        print(f"残差非零元素数量: {np.count_nonzero(b_array)}")
+        print(f"残差最大值: {np.max(np.abs(b_array))}")
         if np.any(np.isnan(b_array)):
             nan_indices = np.where(np.isnan(b_array))[0]
-            self.logger.error(f"残差向量包含 NaN！索引：{nan_indices[:20]}")
+            print(f"残差向量包含 NaN！索引：{nan_indices[:20]}")
             # 保存到文件供分析
             np.savetxt(f"residual_nan_rank{self.rank}.txt", b_array)
             return False, 0
@@ -166,13 +168,15 @@ class SolverManager:
         diag = A.getDiagonal()
         diag_array = diag.getArray()
         if np.any(np.isnan(diag_array)):
-            self.logger.error("雅可比矩阵对角元包含 NaN！")
+            print("雅可比矩阵对角元包含 NaN!")
         if np.any(np.isinf(diag_array)):
-            self.logger.error("雅可比矩阵对角元包含 Inf！")
+            print("雅可比矩阵对角元包含 Inf!")
         zero_diag = np.where(np.abs(diag_array) < 1e-12)[0]
         if len(zero_diag) > 0:
-            self.logger.warning(f"雅可比矩阵有 {len(zero_diag)} 个零对角元，前10个：{zero_diag[:10]}")
-
+            self.logger.warning(f"雅可比矩阵有 {len(zero_diag)} 个零对角元,前10个:{zero_diag[:10]}")
+        else:
+            print("雅各比矩阵无零对角元")
+        
         # 8. 求解
         try:
             n, converged = self.solver.solve(solution)
