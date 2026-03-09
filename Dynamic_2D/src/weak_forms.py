@@ -85,13 +85,14 @@ class WeakFormBuilder:
         F_u = ufl.inner(sigma_eff, ufl.grad(v_u)) * dx_domain 
         - ufl.inner(rho_bulk * g, v_u) * dx_domain \
         - alpha * p * ufl.div(v_u) * dx_domain \
-            
+        
         # 连续性方程（压力扩散）
-        F_p = 1e3 * (ufl.div(v_s) * v_p * dx_domain \
-        + ufl.inner(flux, ufl.grad(v_p)) * dx_domain)
+        F_p = ufl.div(v_s) * v_p * dx_domain \
+        + ufl.inner(flux, ufl.grad(v_p)) * dx_domain
+
 
         # 孔隙度方程：极弱扩散项，仅用于避免奇异
-        epsilon_weak = 1e-5
+        epsilon_weak = 1e-6
         F_phi = epsilon_weak * ufl.dot(ufl.grad(phi), ufl.grad(v_phi)) * dx_domain
 
         # 浓度方程：同样极弱扩散项

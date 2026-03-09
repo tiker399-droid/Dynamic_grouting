@@ -24,7 +24,7 @@ materials:
   grout:
     rho_g: 1800.0                      # 浆液密度 (kg/m³)
     mu_g0: 0.01                        # 浆液初始粘度 (Pa·s)
-    xi: 1.56                           # 粘度增长常数 (1/s)
+    xi: 1.56                           # 粘度增长常数 (1/min)
     filtration_coeff: 0.75              # 过滤系数
     pressure: 420e3                     # 最大注浆压力 (Pa)
     duration: 7200.0                     # 注浆持续时间 (秒)

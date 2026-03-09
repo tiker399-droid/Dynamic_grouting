@@ -384,7 +384,9 @@ class MultiphysicsGroutingSimulation:
 
         self.solution.sub(1).interpolate(hydrostatic_pressure)
         self.solution_prev.sub(1).interpolate(hydrostatic_pressure)
-
+        p_array = self.solution.sub(1).x.array
+        if np.any(np.isnan(p_array)):
+            print("压力插值产生了 NaN!")
         # 其他场初始化为0
         for idx in [0, 3]:   # 位移和浓度保持0
             self.solution.sub(idx).x.array[:] = 0.0
