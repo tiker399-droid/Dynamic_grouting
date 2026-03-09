@@ -338,6 +338,7 @@ class MultiphysicsGroutingSimulation:
 
         # 标量元素
         P1 = basix.ufl.element("Lagrange", cell_type, 1, shape=())
+        P2 = basix.ufl.element("Lagrange", cell_type, 2, shape=())
 
         # 向量元素，形状为 (gdim,)
         P1_vec = basix.ufl.element("Lagrange", cell_type, 1, shape=(gdim,))

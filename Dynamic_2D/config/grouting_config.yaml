@@ -47,8 +47,8 @@ solver:
   max_iterations: 5                      # 非线性最大迭代次数
   relative_tolerance: 1e-3                # 相对容差
   absolute_tolerance: 1e-5                # 绝对容差
-  linear_solver: "cg"                    # 线性求解器 ("mumps", "gmres", "cg")
-  preconditioner: "jacobi"                # 预条件子（当 linear_solver 为 "gmres" 时使用）
+  linear_solver: "mumps"                    # 线性求解器 ("mumps", "gmres", "cg")
+  preconditioner: "lu"                # 预条件子（当 linear_solver 为 "gmres" 时使用）
   report_convergence: true                # 是否输出详细收敛信息
 
 output:
