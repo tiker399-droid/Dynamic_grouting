@@ -122,6 +122,7 @@ class SolverManager:
         elif self.linear_solver == "gmres":
             opts["ksp_type"] = "gmres"
             opts["ksp_gmres_restart"] = 30
+            opts["pc_factor_mat_solver_type"] = "mumps"
             opts["pc_type"] = self.preconditioner
         elif self.linear_solver == "bcgs":
             opts["ksp_type"] = "bcgs"
@@ -134,11 +135,9 @@ class SolverManager:
 
         opts["ksp_monitor"] = None
         opts["ksp_converged_reason"] = None
-        opts["ksp_rtol"] = 1e-6
-        opts["ksp_atol"] = 1e-8
-        opts["ksp_max_it"] = 10000
         opts["pc_factor_shift_type"] = "NONZERO"
         opts["ksp_monitor_singular_value"] = None
+        opts["pc_factor_shift_amount"] = 1e-10
         opts.prefixPop()
         ksp.setFromOptions()
         print(f"Rank {self.rank}: About to call solver.solve at time {time}")
@@ -153,12 +152,10 @@ class SolverManager:
         print(f"残差最大值: {np.max(np.abs(b_array))}")
         if np.any(np.isnan(b_array)):
             nan_indices = np.where(np.isnan(b_array))[0]
-            print(f"残差向量包含 NaN！索引：{nan_indices[:20]}")
-            # 保存到文件供分析
-            np.savetxt(f"residual_nan_rank{self.rank}.txt", b_array)
+            print(f"残差向量包含 NaN!索引：{nan_indices[:20]}")
             return False, 0
         else:
-            self.logger.info("残差向量正常（无 NaN/Inf）")
+            print("残差向量正常(无 NaN/Inf)")
 
         # 手动组装雅可比矩阵
         A = assemble_matrix(self.problem.a, bcs=bcs)   # a 是雅可比形式
@@ -181,6 +178,12 @@ class SolverManager:
         try:
             n, converged = self.solver.solve(solution)
             self.iteration_counts.append(n)
+            phi_array = solution.sub(2).x.array
+            c_array = solution.sub(3).x.array
+            print(f"phi 范围: [{phi_array.min():.3e}, {phi_array.max():.3e}], "
+                f"c 范围: [{c_array.min():.3e}, {c_array.max():.3e}]")
+            if phi_array.min() <= 0 or phi_array.max() > 1:
+                print("警告：孔隙度超出物理范围！")
             return converged, n
         except Exception as e:
             self.logger.error(f"求解器异常: {e}")

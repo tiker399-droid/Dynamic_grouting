@@ -16,6 +16,7 @@ import ufl
 from dolfinx import fem, io, mesh
 import numpy as np
 from typing import Optional, Dict, Any, Callable
+import shutil
 
 # 导入自定义模块
 from materials import MaterialProperties
@@ -341,7 +342,7 @@ class MultiphysicsGroutingSimulation:
         P2 = basix.ufl.element("Lagrange", cell_type, 2, shape=())
 
         # 向量元素，形状为 (gdim,)
-        P1_vec = basix.ufl.element("Lagrange", cell_type, 1, shape=(gdim,))
+        P1_vec = basix.ufl.element("Lagrange", cell_type, 2, shape=(gdim,))
 
         from basix.ufl import mixed_element as create_mixed_element
         mixed_element = create_mixed_element([P1_vec, P1, P1, P1])
@@ -690,7 +691,7 @@ if __name__ == "__main__":
         mesh_file=args.mesh,
         output_dir=args.output
     )
-
+    
     try:
         sim.run(total_time=args.time)
         summary = sim.get_results_summary()

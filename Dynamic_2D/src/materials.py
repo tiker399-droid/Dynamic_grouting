@@ -112,17 +112,21 @@ class MaterialProperties:
         k = k0 * (φ^3) / (1-φ)^2
         添加小量避免除零
         """
-        denominator = (1 - phi)**2 + 1e-10
-        return self.k0 * (phi**3) / denominator
+        phi_safe = ufl.max_value(phi, 0.1)   # 最小孔隙度 0.01
+        phi_safe = ufl.min_value(phi_safe, 0.99)  # 最大孔隙度 0.99
+        denominator = (1 - phi_safe)**2 + 1e-10
+        return self.k0 * (phi_safe**3) / denominator
+
 
     def calculate_viscosity(self, c, time=None):
         """
         计算混合粘度
         μ = c * μ_g(t) + (1-c) * μ_w
         """
+        c_safe = ufl.min_value(ufl.max_value(c, 0.0), 1.0)
         current_time = time if time is not None else self._current_time
-        mu_g = self.mu_g0 * ufl.exp(self.xi * current_time)
-        return c * mu_g + (1 - c) * self.mu_w
+        mu_g = self.mu_g0 * ufl.exp(self.xi * current_time/60)
+        return c_safe * mu_g + (1 - c_safe) * self.mu_w
 
     def calculate_density(self, c):
         """计算混合物密度 ρ = c ρ_g + (1-c) ρ_w"""
