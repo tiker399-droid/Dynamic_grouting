@@ -48,7 +48,7 @@ class WeakFormBuilder:
         num_subspaces = self.W.num_sub_spaces
         if num_subspaces != 4:
             self.logger.warning(f"函数空间应有4个子空间，当前有{num_subspaces}个")
-
+    '''
     def build_form(self, dt, time, solution, solution_prev, boundary_conditions):
         v_u, v_p, v_phi, v_c = ufl.TestFunctions(self.W)
         u, p, phi, c = ufl.split(solution)
@@ -73,7 +73,7 @@ class WeakFormBuilder:
         # 达西速度（用于压力方程，但注意压力方程本身是扩散形式）
         # 实际上在连续性方程中，我们用的是 ufl.inner((k/mu)*(grad(p)-rho*g), grad(v_p))
         # 所以需要计算这个表达式
-        flux = (k / mu) * (ufl.grad(p) - rho * g)
+        flux = -(k / mu) * (ufl.grad(p) - rho * g)
 
         # 定义积分度量（根据您的情况可以是 dx_domain）
         dx_domain = ufl.dx  # 或使用带标记的 dx
@@ -82,14 +82,13 @@ class WeakFormBuilder:
         sigma_eff = self.mat.effective_stress(u)
         alpha = self.mat.biot_coefficient()
 
-        F_u = ufl.inner(sigma_eff, ufl.grad(v_u)) * dx_domain 
-        - ufl.inner(rho_bulk * g, v_u) * dx_domain \
-        - alpha * p * ufl.div(v_u) * dx_domain \
+        F_u = (ufl.inner(sigma_eff, ufl.grad(v_u)) * dx_domain
+        - ufl.inner(rho_bulk * g, v_u) * dx_domain
+        - alpha * p * ufl.div(v_u) * dx_domain)
         
         # 连续性方程（压力扩散）
-        F_p = ufl.div(v_s) * v_p * dx_domain \
-        + ufl.inner(flux, ufl.grad(v_p)) * dx_domain
-
+        F_p = (ufl.inner(v_s, ufl.grad(v_p)) * dx_domain
+        - ufl.inner(flux, ufl.grad(v_p)) * dx_domain)
 
         # 孔隙度方程：极弱扩散项，仅用于避免奇异
         epsilon_weak = 1e-6
@@ -176,30 +175,30 @@ class WeakFormBuilder:
         # Biot系数 α
         alpha = self.mat.biot_coefficient()
 
-        F_u = ufl.inner(sigma_eff, ufl.grad(v_u)) * dx_domain \
+        F_u = (ufl.inner(sigma_eff, ufl.grad(v_u)) * dx_domain \
               - alpha * p * ufl.div(v_u) * dx_domain \
-              - ufl.inner(rho_bulk * g, v_u) * dx_domain
+              - ufl.inner(rho_bulk * g, v_u) * dx_domain)
         
         # --- 连续性方程 (F_p) ---
-        F_p = (ufl.div(v_s)) * v_p * dx_domain \
-              + ufl.inner((k / mu) * (ufl.grad(p) - rho * g), ufl.grad(v_p)) * dx_domain
+        F_p = (ufl.inner(sigma_eff, ufl.grad(v_u)) * dx_domain \
+              + ufl.inner(q_darcy, ufl.grad(v_p)) * dx_domain)
         
         # --- 孔隙率演化方程 (F_phi) ---
         epsilon_diff_phi = 1e-6   # 原为 1e-8，增大至 1e-6
-        F_phi = (- (phi - phi_n) / dt * v_phi) * dx_domain \
+        F_phi = ((- (phi - phi_n) / dt * v_phi) * dx_domain \
                 + ufl.div(v_s) * v_phi * dx_domain \
                 + ufl.inner(phi * v_s, ufl.grad(v_phi)) * dx_domain \
                 + epsilon_diff_phi * ufl.dot(ufl.grad(phi), ufl.grad(v_phi)) * dx_domain \
-                - n_hat * v_phi * dx_domain      # 添加过滤源项（注意符号：方程中为 -n_hat）
+                - n_hat * v_phi * dx_domain)      # 添加过滤源项（注意符号：方程中为 -n_hat）
 
         # --- 浓度输运方程 (F_c) ---
         epsilon_diff = 1e-6        # 原为 1e-6，可保持不变或也增大（此处保持 1e-6）
-        F_c = ((c * phi - c_n * phi_n) / dt * v_c) * dx_domain \
+        F_c = (((c * phi - c_n * phi_n) / dt * v_c) * dx_domain \
             - ufl.inner(c * q_darcy, ufl.grad(v_c)) * dx_domain \
             - ufl.inner(c * phi * v_s, ufl.grad(v_c)) * dx_domain \
             + epsilon_diff * ufl.dot(ufl.grad(c), ufl.grad(v_c)) * dx_domain \
-            + n_hat * v_c * dx_domain           # 添加过滤源项（符号：方程中为 +n_hat）
-        
+            + n_hat * v_c * dx_domain)           # 添加过滤源项（符号：方程中为 +n_hat）
+
         # --- 总残差 ---
         F = F_u + F_p + F_phi + F_c
 
@@ -212,7 +211,7 @@ class WeakFormBuilder:
             self.logger.debug(f"弱形式构建完成，时间={time:.2f}, dt={dt:.3e}")
 
         return F, J
-    '''   
+    
     def build_mass_matrix(self):
         """构建质量矩阵（可选）"""
         pass
