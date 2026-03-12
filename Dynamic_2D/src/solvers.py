@@ -178,8 +178,8 @@ class SolverManager:
         try:
             n, converged = self.solver.solve(solution)
             self.iteration_counts.append(n)
-            phi_array = solution.sub(2).x.array
-            c_array = solution.sub(3).x.array
+            phi_array = solution.sub(2).x.array.copy()
+            c_array = solution.sub(3).x.array.copy()
             print(f"phi 范围: [{phi_array.min():.3e}, {phi_array.max():.3e}], "
                 f"c 范围: [{c_array.min():.3e}, {c_array.max():.3e}]")
             if phi_array.min() <= 0 or phi_array.max() > 1:

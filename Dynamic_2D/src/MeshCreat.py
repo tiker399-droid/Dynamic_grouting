@@ -189,7 +189,7 @@ def create_foundation_2d_with_drill_hole():
 
     # 设置网格尺寸
     mesh_size_coarse = 0.5  # 增大粗网格尺寸
-    mesh_size_fine = 0.05   # 适当减小细网格尺寸
+    mesh_size_fine = 0.1   # 适当减小细网格尺寸
 
     # 钻孔边界细化
     drill_curves = hole_side + hole_bottom

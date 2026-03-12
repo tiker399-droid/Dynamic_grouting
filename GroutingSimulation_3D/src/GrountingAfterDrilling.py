@@ -258,7 +258,7 @@ class GroutingSimulation:
 
     def run_simulation(self):
         """运行灌浆模拟"""
-        output_dir = "GroutingSimulation/results/grouting_simulation"
+        output_dir = "GroutingSimulation_3D/results/grouting_simulation"
         if self.msh.comm.rank == 0 and not os.path.exists(output_dir):
             os.makedirs(output_dir)
         
@@ -519,7 +519,7 @@ def main():
     # 读取网格
     print("读取网格...")
     msh, cell_markers, facet_markers = gmshio.read_from_msh(
-        "GroutingSimulation/results/MeshCreate/foundation_drilling_model.msh", 
+        "GroutingSimulation_3D/results/MeshCreate/foundation_drilling_model.msh", 
         comm, rank=0, gdim=3
     )
     
@@ -527,7 +527,7 @@ def main():
     print(f"单元标记: {np.unique(cell_markers.values)}")
     
     # 读取初始位移场
-    h5_filename = "GroutingSimulation/results/drilling_simulation/final_displacement.h5"
+    h5_filename = "GroutingSimulation_3D/results/drilling_simulation/final_displacement.h5"
     initial_displacement = None
     
     if os.path.exists(h5_filename):
