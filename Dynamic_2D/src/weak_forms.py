@@ -169,20 +169,46 @@ class WeakFormBuilder:
         else:
             dx_domain = ufl.dx  # 默认全区域积分
 
+        # --- 定义参考量（从配置和材料类读取）---
+        L0 = self.config['geometry']['height']           # 13.0 m
+        E0 = self.mat.E                                   # 20e6 Pa
+        rho_w = self.mat.rho_w
+        g_mag = self.mat.g_magnitude
+        P0 = rho_w * g_mag * L0                           # 参考压力
+        U0 = P0 * L0 / E0                                  # 参考位移
+        # 参考渗透率和粘度（用于扩散项缩放）
+        k0 = self.mat.k0
+        mu_w = self.mat.mu_w
+
+        t0 = L0**2 * mu_w / (k0 * E0)
+        scale_continuity = t0 / (U0 * L0)
+
+        # 动量方程缩放因子：使弹性项无量纲
+        scale_u = 1.0 / (E0 * L0)
+        # 压力项缩放因子
+        scale_p_force = 1.0 / (P0 * L0)
+        # 体力项缩放因子（与弹性项相同）
+        scale_body = scale_u
+
+
         # --- 动量平衡方程 (F_u) ---
         # 有效应力 σ'(u)
         sigma_eff = self.mat.effective_stress(u)
         # Biot系数 α
         alpha = self.mat.biot_coefficient()
 
-        F_u = (ufl.inner(sigma_eff, ufl.grad(v_u)) * dx_domain \
-              - alpha * p * ufl.div(v_u) * dx_domain \
-              - ufl.inner(rho_bulk * g, v_u) * dx_domain)
+        # 注意：材料属性（k, mu, rho等）仍保留有量纲值，但乘以缩放因子后变为无量纲贡献
+
+        F_u = (scale_u * ufl.inner(sigma_eff, ufl.grad(v_u)) * dx_domain
+            - scale_p_force * alpha * p * ufl.div(v_u) * dx_domain
+            - scale_body * ufl.inner(rho_bulk * g, v_u) * dx_domain)
         
-        # --- 连续性方程 (F_p) ---
-        F_p = (ufl.inner(sigma_eff, ufl.grad(v_u)) * dx_domain \
-              + ufl.inner(q_darcy, ufl.grad(v_p)) * dx_domain)
+        # 连续性方程整体乘以 scale_diff
+        F_p = (ufl.div(v_s) * v_p * dx_domain
+                            + scale_continuity * ufl.inner((k / mu) * (ufl.grad(p) - rho * g), ufl.grad(v_p)) * dx_domain)
         
+        epsilon_weak = 1e-6
+
         # --- 孔隙率演化方程 (F_phi) ---
         epsilon_diff_phi = 1e-6   # 原为 1e-8，增大至 1e-6
         F_phi = ((- (phi - phi_n) / dt * v_phi) * dx_domain \
@@ -190,6 +216,8 @@ class WeakFormBuilder:
                 + ufl.inner(phi * v_s, ufl.grad(v_phi)) * dx_domain \
                 + epsilon_diff_phi * ufl.dot(ufl.grad(phi), ufl.grad(v_phi)) * dx_domain \
                 - n_hat * v_phi * dx_domain)      # 添加过滤源项（注意符号：方程中为 -n_hat）
+
+        F_phi = epsilon_weak * ufl.dot(ufl.grad(phi), ufl.grad(v_phi)) * dx_domain
 
         # --- 浓度输运方程 (F_c) ---
         epsilon_diff = 1e-6        # 原为 1e-6，可保持不变或也增大（此处保持 1e-6）
@@ -199,6 +227,7 @@ class WeakFormBuilder:
             + epsilon_diff * ufl.dot(ufl.grad(c), ufl.grad(v_c)) * dx_domain \
             + n_hat * v_c * dx_domain)           # 添加过滤源项（符号：方程中为 +n_hat）
 
+        F_c = epsilon_weak * ufl.dot(ufl.grad(c), ufl.grad(v_c)) * dx_domain
         # --- 总残差 ---
         F = F_u + F_p + F_phi + F_c
 

@@ -381,7 +381,7 @@ class MultiphysicsGroutingSimulation:
 
         # 插值函数：p = ρ_w g (H - y)   （二维 y 向上）
         def hydrostatic_pressure(x):
-            return rho_w * g * (H - x[1])   # x[1] 即 y 坐标
+            return (H - x[1]) / H    # x[1] 即 y 坐标
 
         self.solution.sub(1).interpolate(hydrostatic_pressure)
         self.solution_prev.sub(1).interpolate(hydrostatic_pressure)

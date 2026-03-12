@@ -69,6 +69,8 @@ class DynamicBoundaryConditionsManager:
         self.rank = self.comm.Get_rank()
         self.time_controller = time_controller
 
+        
+
         # 日志
         self.logger = logging.getLogger(f"BCManager_rank{self.rank}")
 
@@ -81,6 +83,7 @@ class DynamicBoundaryConditionsManager:
         # 提取几何与注浆参数
         self._extract_parameters()
 
+        self.P0 = self.materials.rho_w * self.gravity_magnitude * self.foundation_height
         # 初始化子空间引用
         self._init_subspaces()
 
@@ -122,9 +125,10 @@ class DynamicBoundaryConditionsManager:
         water_config = self.config.get('materials', {}).get('water', {})
 
         # 注浆压力参数（确保类型转换）
-        self.pressure_max = float(grout_config.get('pressure', 220e3))           # Pa
+        self.pressure_max = float(grout_config.get('pressure', 420e3))           # Pa
         self.grouting_duration = float(grout_config.get('duration', 600.0))      # s
         self.rise_time = float(grout_config.get('rise_time', 60.0))              # s
+        self.gravity_magnitude = 9.81
         pressure_mode_str = grout_config.get('pressure_mode', 'linear_increase')
         try:
             self.pressure_mode = PressureEvolutionMode(pressure_mode_str)
@@ -376,12 +380,12 @@ class DynamicBoundaryConditionsManager:
         if self.gdim == 2:
             water_pressure_func = fem.Function(V_p_collapsed)
             water_pressure_func.interpolate(
-                lambda x: self.water_density * self.gravity_magnitude * (self.foundation_height - x[1])
+                lambda x: (self.foundation_height - x[1]) / self.foundation_height   # 无量纲压力
             )
         else:
             water_pressure_func = fem.Function(V_p_collapsed)
             water_pressure_func.interpolate(
-                lambda x: self.water_density * self.gravity_magnitude * (self.foundation_height - x[2])
+                lambda x: (self.foundation_height - x[2]) / self.foundation_height   # 无量纲压力
             )
 
         side_markers = ['marker_103', 'marker_104']  # 左右边界
@@ -404,9 +408,9 @@ class DynamicBoundaryConditionsManager:
             if stage == GroutingStage.COMPLETED:
                 current_pressure = 0.0
             else:
-                current_pressure = self.pressure_func(self.time)
+                current_pressure = self.pressure_func(self.time) / self.P0
         else:
-            current_pressure = self.pressure_func(self.time)
+            current_pressure = self.pressure_func(self.time) / self.P0
 
         self.current_values['grouting_pressure'] = current_pressure
         self.current_values['is_grouting_active'] = (current_pressure > 1.0)  # 忽略微小值
@@ -437,70 +441,6 @@ class DynamicBoundaryConditionsManager:
 
     def _create_concentration_bcs(self):
         pass
-        """
-        创建完整的浓度边界条件
-        - 在注浆孔边界设置 c=1（如果正在注浆）
-        - 在其他所有外部边界设置 c=0（自然边界，表示无浆液流入）
-        
-        fdim = self.mesh.topology.dim - 1
-        V_c = self.subspaces['concentration']
-        V_c_collapsed, c_to_parent = V_c.collapse()
-
-        zero_func = fem.Function(V_c_collapsed)
-        zero_func.x.array[:] = 0.0
-
-        # 在所有外部边界设置 c=0（底部、侧面、顶部、钻孔壁面）
-        boundary_facets = []
-
-        # 底部边界 (标记 107)
-        if 'marker_107' in self.boundary_geometries:
-            boundary_facets.append(self.boundary_geometries['marker_107']['facets'])
-
-        # 侧面边界 (标记 103,104)
-        side_markers = ['marker_103', 'marker_104']
-        for marker in side_markers:
-            if marker in self.boundary_geometries:
-                boundary_facets.append(self.boundary_geometries[marker]['facets'])
-
-        # 顶部边界
-        if 'top' in self.boundary_geometries:
-            boundary_facets.append(self.boundary_geometries['top']['facets'])
-
-        # 钻孔壁面 (标记 101,102,106)
-        drill_markers = ['marker_101', 'marker_102', 'marker_106']
-        for marker in drill_markers:
-            if marker in self.boundary_geometries:
-                boundary_facets.append(self.boundary_geometries[marker]['facets'])
-
-        # 对所有外部边界施加 c=0
-        for facets in boundary_facets:
-            if facets.shape[0] > 0:
-                dofs = fem.locate_dofs_topological(V_c, fdim, facets)
-                bc = fem.dirichletbc(zero_func, dofs)
-                self.bcs.append(bc)
-
-        # 然后在注浆孔边界覆盖为 c=1（如果正在注浆）
-        if self.current_values['is_grouting_active']:
-            conc_func = fem.Function(V_c_collapsed)
-            conc_func.x.array[:] = 1.0
-
-            grout_inlets = [name for name in self.boundary_geometries.keys()
-                            if name.startswith('grout_inlet_')]
-            if not grout_inlets and 'grout_inlet_fallback' in self.boundary_geometries:
-                grout_inlets = ['grout_inlet_fallback']
-
-            for inlet_name in grout_inlets:
-                facets = self.boundary_geometries[inlet_name]['facets']
-                if facets.shape[0] > 0:
-                    dofs = fem.locate_dofs_topological(V_c, fdim, facets)
-                    bc = fem.dirichletbc(conc_func, dofs)
-                    self.bcs.append(bc)
-
-            self.current_values['grouting_concentration'] = 1.0
-            if self.rank == 0:
-                self.logger.debug("浓度边界已激活 (c=1 在注浆孔)")
-        else:
-            self.current_values['grouting_concentration'] = 0.0"""
 
     # ------------------------------------------------------------------
     # 公共方法
