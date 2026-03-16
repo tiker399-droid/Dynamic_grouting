@@ -88,10 +88,10 @@ class MaterialProperties:
         gdim = self.mesh.geometry.dim
         if gdim == 2:
             # 二维：重力向下为 y 负方向
-            g_vector = np.array([0.0, -self.g_magnitude], dtype=np.float64)
+            g_vector = np.array([0.0, self.g_magnitude], dtype=np.float64)
         else:
             # 三维：重力向下为 z 负方向
-            g_vector = np.array([0.0, 0.0, -self.g_magnitude], dtype=np.float64)
+            g_vector = np.array([0.0, 0.0, self.g_magnitude], dtype=np.float64)
 
         self.g = fem.Constant(self.mesh, g_vector)
 

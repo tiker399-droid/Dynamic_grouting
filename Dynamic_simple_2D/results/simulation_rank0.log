@@ -1,26 +1,28 @@
-[01:24:49 | Rank 51012 | INFO] 输入文件验证通过
-[01:24:49 | Rank 51012 | INFO] 配置文件加载成功
-[01:24:49 | Rank 51012 | INFO] 多物理场注浆模拟器（简化两场系统）初始化完成
-[01:24:49 | Rank 51012 | INFO] 进程数: 1
-[01:24:49 | Rank 51012 | INFO] 配置文件: /root/shared/Dynamic_simple_2D/config/grouting_config.yaml
-[01:24:49 | Rank 51012 | INFO] 网格文件: /root/shared/Dynamic_simple_2D/meshes/foundation_drilling_2d.msh
-[01:24:49 | Rank 51012 | INFO] 输出目录: /root/shared/Dynamic_simple_2D/results
-[01:24:49 | Rank 51012 | INFO] ============================================================
-[01:24:49 | Rank 51012 | INFO] 开始多物理场注浆模拟（简化两场系统）
-[01:24:49 | Rank 51012 | INFO] ============================================================
-[01:24:49 | Rank 51012 | INFO] 开始初始化各模块...
-[01:24:49 | Rank 51012 | INFO] 网格信息: 2609 个单元, 1444 个节点
-[01:24:49 | Rank 51012 | INFO] 初始条件设置完成：压力初始化为静水压力，位移为零
-[01:24:49 | Rank 51012 | INFO] 函数空间: 12436 个自由度
-[01:24:49 | Rank 51012 | INFO] 所有模块初始化完成
-[01:24:49 | Rank 51012 | INFO] 总模拟时间: 100.0秒
-[01:24:49 | Rank 51012 | INFO] 最大时间步数: 10000
-[01:24:49 | Rank 51012 | INFO] 保存频率: 每 10 步
-[01:24:49 | Rank 51012 | INFO] 时间步 1: t=0.1s, dt=0.120s, 进度=0.1%
-[01:24:57 | Rank 51012 | INFO] 时间步 100: t=92.7s, dt=1.000s, 进度=92.7%
-[01:24:57 | Rank 51012 | INFO] ============================================================
-[01:24:57 | Rank 51012 | INFO] 模拟成功完成
-[01:24:57 | Rank 51012 | INFO] 总时间步数: 108
-[01:24:57 | Rank 51012 | INFO] 最终时间: 100.0s
-[01:24:57 | Rank 51012 | INFO] ============================================================
-[01:24:57 | Rank 51012 | INFO] 模拟资源已清理
+[08:26:05 | Rank 37920 | INFO] 输入文件验证通过
+[08:26:05 | Rank 37920 | INFO] 配置文件加载成功
+[08:26:05 | Rank 37920 | INFO] 多物理场注浆模拟器（简化两场系统，独立空间）初始化完成
+[08:26:05 | Rank 37920 | INFO] 进程数: 1
+[08:26:05 | Rank 37920 | INFO] 配置文件: /root/shared/Dynamic_simple_2D/config/grouting_config.yaml
+[08:26:05 | Rank 37920 | INFO] 网格文件: /root/shared/Dynamic_simple_2D/meshes/foundation_drilling_2d.msh
+[08:26:05 | Rank 37920 | INFO] 输出目录: /root/shared/Dynamic_simple_2D/results
+[08:26:05 | Rank 37920 | INFO] ============================================================
+[08:26:05 | Rank 37920 | INFO] 开始多物理场注浆模拟（简化两场系统，独立空间）
+[08:26:05 | Rank 37920 | INFO] ============================================================
+[08:26:05 | Rank 37920 | INFO] 开始初始化各模块...
+[08:26:05 | Rank 37920 | INFO] 网格信息: 6738 个单元, 3613 个节点
+[08:26:05 | Rank 37920 | INFO] 初始条件设置完成：压力初始化为静水压力，位移为零
+[08:26:05 | Rank 37920 | INFO] 函数空间: 位移自由度 27926, 压力自由度 3613
+[08:26:05 | Rank 37920 | INFO] 所有模块初始化完成
+[08:26:05 | Rank 37920 | INFO] 总模拟时间: 6.0秒
+[08:26:05 | Rank 37920 | INFO] 最大时间步数: 10000
+[08:26:05 | Rank 37920 | INFO] 保存频率: 每 10 步
+[08:26:05 | Rank 37920 | INFO] 时间步 1: t=0.1s, dt=0.120s, 进度=2.0%
+[08:26:07 | Rank 37920 | ERROR] 模拟运行失败: type object 'GroutingStage' has no attribute 'PRESSURE_STEADY'
+Traceback (most recent call last):
+  File "/root/shared/Dynamic_simple_2D/src/core.py", line 441, in run
+    self.bc_manager.update(self.time)
+  File "/root/shared/Dynamic_simple_2D/src/boundary_conditions.py", line 399, in update
+    stage = GroutingStage.PRESSURE_STEADY
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: type object 'GroutingStage' has no attribute 'PRESSURE_STEADY'
+[08:26:07 | Rank 37920 | INFO] 模拟资源已清理

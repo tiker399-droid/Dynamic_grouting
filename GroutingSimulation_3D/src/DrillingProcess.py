@@ -10,7 +10,7 @@ from dolfinx import plot
 
 # 读取Gmsh网格
 comm = MPI.COMM_WORLD
-msh, cell_markers, facet_markers = gmshio.read_from_msh("GroutingSimulation/results/MeshCreate/foundation_drilling_model.msh", comm, rank=0, gdim=3)
+msh, cell_markers, facet_markers = gmshio.read_from_msh("GroutingSimulation_3D/results/MeshCreate/foundation_drilling_model.msh", comm, rank=0, gdim=3)
 
 print(f"Mesh imported: {msh.topology.index_map(3).size_local} cells")
 print(f"Cell markers: {np.unique(cell_markers.values)}")

@@ -70,7 +70,7 @@ class MaterialProperties:
         self.rho_w = float(water.get('rho_w', 1000.0))        # 水密度 (kg/m³)
         self.mu_w = float(water.get('mu_w', 0.001))           # 水粘度 (Pa·s)
 
-        # 重力加速度大小（向下为正）
+        # 重力加速度大小
         self.g_magnitude = 9.81                               # m/s²
 
         # 存储原始配置（供调试）
