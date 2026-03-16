@@ -1,7 +1,7 @@
 """
 输出管理器 - 处理模拟结果输出
 支持主要物理场和衍生场的 XDMF 格式输出
-简化两场系统 [位移, 压力]
+简化两场系统 [位移, 压力]，独立函数空间版本
 """
 
 from pathlib import Path
@@ -104,28 +104,12 @@ class OutputManager:
             self.logger.error(f"初始化输出文件失败: {e}")
             raise
 
-    def _get_field_index(self, field_name: str) -> Optional[int]:
-        """
-        根据字段名获取在混合空间中的索引
-
-        Args:
-            field_name: 字段名
-
-        Returns:
-            索引或 None
-        """
-        # 两场系统：[位移, 压力]
-        field_mapping = {
-            'displacement': 0,
-            'pressure': 1
-        }
-        return field_mapping.get(field_name)
-
     def write_timestep(
         self,
         time: float,
         time_step: int,
-        solution: fem.Function,
+        u: fem.Function,
+        p: fem.Function,
         derived_fields: Optional[Dict[str, Any]] = None
     ):
         """
@@ -134,7 +118,8 @@ class OutputManager:
         Args:
             time: 当前时间
             time_step: 当前时间步编号
-            solution: 混合函数（包含所有场）
+            u: 位移函数
+            p: 压力函数
             derived_fields: 衍生场字典，键为字段名，值为 Function 或可插值对象
         """
         # 检查保存频率
@@ -142,33 +127,25 @@ class OutputManager:
             return
 
         try:
-            # 写入主要物理场
-            for field_name in self.fields_to_save:
-                idx = self._get_field_index(field_name)
-                if idx is None:
-                    continue
+            # 写入位移（如果需要）
+            if 'displacement' in self.fields_to_save:
+                # 创建线性向量空间（若尚未创建）
+                if self._P1_vec_space is None:
+                    gdim = self.mesh.geometry.dim
+                    cell_type = self.mesh.topology.cell_name()
+                    P1_vec = basix.ufl.element("Lagrange", cell_type, 1, shape=(gdim,))
+                    self._P1_vec_space = fem.functionspace(self.mesh, P1_vec)
 
-                # 提取子函数并 collapse 到独立空间
-                field_func = solution.sub(idx).collapse()
-                field_func.name = field_name
+                # 插值到线性空间
+                u_p1 = fem.Function(self._P1_vec_space)
+                u_p1.interpolate(u)
+                u_p1.name = "displacement"
+                self.main_file.write_function(u_p1, time)
 
-                # 对于位移场，需要插值到线性空间以匹配网格几何阶数
-                if field_name == "displacement":
-                    # 创建线性向量空间（若尚未创建）
-                    if self._P1_vec_space is None:
-                        gdim = self.mesh.geometry.dim
-                        cell_type = self.mesh.topology.cell_name()
-                        P1_vec = basix.ufl.element("Lagrange", cell_type, 1, shape=(gdim,))
-                        self._P1_vec_space = fem.functionspace(self.mesh, P1_vec)
-
-                    # 插值到线性空间
-                    u_p1 = fem.Function(self._P1_vec_space)
-                    u_p1.interpolate(field_func)
-                    u_p1.name = field_name
-                    self.main_file.write_function(u_p1, time)
-                else:
-                    # 压力场（或其它标量场）直接写入
-                    self.main_file.write_function(field_func, time)
+            # 写入压力（如果需要）
+            if 'pressure' in self.fields_to_save:
+                p.name = "pressure"
+                self.main_file.write_function(p, time)
 
             # 写入衍生场
             if derived_fields and self.derived_file:

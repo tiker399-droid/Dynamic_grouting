@@ -1,10 +1,9 @@
 """
-多物理场耦合注浆模拟 - 主控制器（简化两场系统）
+多物理场耦合注浆模拟 - 主控制器（简化两场系统，独立空间）
 基于混合物理论，模拟地基固结注浆过程
 坐标系：竖直向上为正，二维中 y 向上，重力向量 (0,-9.81)
-混合函数空间顺序：[位移, 压力]
+场顺序：位移(u), 压力(p) 分别独立
 注：使用压力扩散方程，达西速度从压力场导出
-支持二维/三维自动适应
 """
 
 import logging
@@ -16,21 +15,19 @@ import ufl
 from dolfinx import fem, io, mesh
 import numpy as np
 from typing import Optional, Dict, Any, Callable
-from decoupled_solver import DecoupledSolver
 
 # 导入自定义模块
 from materials import MaterialProperties
 from boundary_conditions import DynamicBoundaryConditionsManager
-from weak_forms import WeakFormBuilder
-from solvers import SolverManager
+from decoupled_solver import DecoupledSolver
 from time_stepping import TimeStepManager
 from output_manager import OutputManager
 
 
 class MultiphysicsGroutingSimulation:
     """
-    多物理场耦合注浆模拟器主控制器
-    简化两场系统 [位移, 压力]
+    多物理场注浆模拟器主控制器
+    简化两场系统 [位移, 压力]，独立函数空间
     """
 
     def __init__(self, config_file: str = "config/grouting_config.yaml",
@@ -44,14 +41,10 @@ class MultiphysicsGroutingSimulation:
             mesh_file: Gmsh网格文件路径（二维网格）
             output_dir: 结果输出目录
         """
-
         # 获取当前脚本所在目录（即 src 文件夹）
         script_dir = Path(__file__).parent.resolve()
-        # 项目根目录为 src 的父目录（注意：现在应指向 Dynamic_simple_2D）
-        # 我们期望用户将项目复制为 Dynamic_simple_2D，但这里代码仍指向父目录，实际路径由调用时指定
         project_root = script_dir.parent
 
-        # 将传入的路径（相对路径）转换为基于项目根目录的绝对路径
         self.config_file = project_root / config_file
         self.mesh_file = project_root / mesh_file
         self.output_dir = project_root / output_dir
@@ -69,21 +62,23 @@ class MultiphysicsGroutingSimulation:
         # 模块初始化状态
         self._modules_initialized = False
 
-        # 配置字典（将在 _load_configuration 中填充）
+        # 配置字典
         self.config = None
 
         # 模块占位符
         self.mesh = None
         self.cell_tags = None
         self.facet_tags = None
-        self.W = None                     # 混合函数空间 [u, p]
-        self.solution = None               # 当前步解
-        self.solution_prev = None           # 上一步解
-        self.fields = {}                   # 场变量字典（用于调试/输出）
+        self.V_u = None          # 位移函数空间
+        self.V_p = None          # 压力函数空间
+        self.u = None            # 当前位移
+        self.p = None            # 当前压力
+        self.u_prev = None       # 上一步位移
+        self.p_prev = None       # 上一步压力
+        self.fields = {}         # 场变量字典（用于调试/输出）
 
         self.materials = None
         self.bc_manager = None
-        self.weak_form_builder = None
         self.solver_manager = None
         self.time_controller = None
         self.output_manager = None
@@ -98,7 +93,7 @@ class MultiphysicsGroutingSimulation:
         self._load_configuration()
 
         if self.rank == 0:
-            self.logger.info(f"多物理场注浆模拟器（简化两场系统）初始化完成")
+            self.logger.info(f"多物理场注浆模拟器（简化两场系统，独立空间）初始化完成")
             self.logger.info(f"进程数: {self.size}")
             self.logger.info(f"配置文件: {self.config_file}")
             self.logger.info(f"网格文件: {self.mesh_file}")
@@ -225,7 +220,7 @@ class MultiphysicsGroutingSimulation:
             },
             'output': {
                 'format': 'xdmf',
-                'fields': ['displacement', 'pressure'],  # 只保留位移和压力
+                'fields': ['displacement', 'pressure'],
                 'write_frequency': 10,
                 'monitor_frequency': 100,
             },
@@ -269,7 +264,6 @@ class MultiphysicsGroutingSimulation:
             self._initialize_function_spaces()
             self._initialize_time_stepping()
             self._initialize_boundary_conditions()
-            self._initialize_weak_forms()
             self._initialize_solver_manager()
             self._initialize_output_manager()
 
@@ -309,28 +303,23 @@ class MultiphysicsGroutingSimulation:
         )
 
     def _initialize_function_spaces(self):
-        """创建混合函数空间 [u, p]，向量元素维度由 gdim 决定"""
+        """创建独立的函数空间：位移(向量P2) 和 压力(标量P1)"""
         gdim = self.mesh.geometry.dim
-
+        cell_type = self.mesh.topology.cell_name()
         import basix.ufl
 
-        cell_type = self.mesh.topology.cell_name()
-
-        # 标量元素 (压力)
-        P1 = basix.ufl.element("Lagrange", cell_type, 1, shape=())
-        # 向量元素 (位移)，阶次为2以提高稳定性
+        # 位移空间 (向量，二阶)
         P2_vec = basix.ufl.element("Lagrange", cell_type, 2, shape=(gdim,))
+        self.V_u = fem.functionspace(self.mesh, P2_vec)
 
-        from basix.ufl import mixed_element as create_mixed_element
-        mixed_element = create_mixed_element([P2_vec, P1])  # 位移 (P2) + 压力 (P1)
+        # 压力空间 (标量，一阶)
+        P1 = basix.ufl.element("Lagrange", cell_type, 1, shape=())
+        self.V_p = fem.functionspace(self.mesh, P1)
 
-        self.W = fem.functionspace(self.mesh, mixed_element)
-
-        self.solution = fem.Function(self.W, name="Solution")
-        self.solution_prev = fem.Function(self.W, name="Solution_previous")
-
-        self.u, self.p = ufl.split(self.solution)
-        self.u_n, self.p_n = ufl.split(self.solution_prev)
+        self.u = fem.Function(self.V_u, name="Displacement")
+        self.p = fem.Function(self.V_p, name="Pressure")
+        self.u_prev = fem.Function(self.V_u, name="Displacement_previous")
+        self.p_prev = fem.Function(self.V_p, name="Pressure_previous")
 
         self.fields = {
             'displacement': self.u,
@@ -340,25 +329,28 @@ class MultiphysicsGroutingSimulation:
         self._set_initial_conditions()
 
         if self.rank == 0:
-            dof_count = self.W.dofmap.index_map.size_global * self.W.dofmap.index_map_bs
-            self.logger.info(f"函数空间: {dof_count} 个自由度")
+            dof_u = self.V_u.dofmap.index_map.size_global * self.V_u.dofmap.index_map_bs
+            dof_p = self.V_p.dofmap.index_map.size_global
+            self.logger.info(f"函数空间: 位移自由度 {dof_u}, 压力自由度 {dof_p}")
 
     def _set_initial_conditions(self):
         """设置初始条件"""
         # 位移初始为0
-        self.solution.sub(0).x.array[:] = 0.0
-        self.solution_prev.sub(0).x.array[:] = 0.0
+        self.u.x.array[:] = 0.0
+        self.u_prev.x.array[:] = 0.0
 
-        # 压力初始化为静水压力（无量纲）
-        H = self.config['geometry']['height']   # 地基高度
+        # 压力初始化为静水压力（有量纲）
+        H = self.config['geometry']['height']
+        rho_w = self.materials.rho_w
+        g = self.materials.g_magnitude
 
         def hydrostatic_pressure(x):
-            return (H - x[1]) / H    # 无量纲压力
+            return rho_w * g * (H - x[1])   # 有量纲
 
-        self.solution.sub(1).interpolate(hydrostatic_pressure)
-        self.solution_prev.sub(1).interpolate(hydrostatic_pressure)
+        self.p.interpolate(hydrostatic_pressure)
+        self.p_prev.interpolate(hydrostatic_pressure)
 
-        p_array = self.solution.sub(1).x.array
+        p_array = self.p.x.array
         if np.any(np.isnan(p_array)):
             print("压力插值产生了 NaN!")
 
@@ -366,35 +358,27 @@ class MultiphysicsGroutingSimulation:
             self.logger.info("初始条件设置完成：压力初始化为静水压力，位移为零")
 
     def _initialize_boundary_conditions(self):
-        """初始化边界条件管理器"""
+        """初始化边界条件管理器，传入独立的函数空间"""
         self.bc_manager = DynamicBoundaryConditionsManager(
             mesh_obj=self.mesh,
             facet_tags=self.facet_tags,
             materials=self.materials,
             config=self.config,
-            function_space=self.W,
+            V_u=self.V_u,
+            V_p=self.V_p,
             time=self.time,
             time_controller=self.time_controller
         )
 
-    def _initialize_weak_forms(self):
-        """初始化弱形式构建器"""
-        self.weak_form_builder = WeakFormBuilder(
-            function_space=self.W,
-            materials=self.materials,
-            config=self.config,
-            fields=self.fields,
-            cell_tags=self.cell_tags
-        )
-
     def _initialize_solver_manager(self):
-        """初始化求解器管理器"""
+        """初始化解耦求解器"""
         self.solver_manager = DecoupledSolver(
             comm=self.comm,
             materials=self.materials,
             bc_manager=self.bc_manager,
-            function_space=self.W,
-            config=self.config   # 注意传递整个 config，或只传 solver 部分
+            V_u=self.V_u,
+            V_p=self.V_p,
+            config=self.config
         )
 
     def _initialize_time_stepping(self):
@@ -403,8 +387,6 @@ class MultiphysicsGroutingSimulation:
             config=self.config,
             comm=self.comm
         )
-        # 注入率计算在简化系统中可能不需要，但可以保留（如果用到的话）
-        # self.time_controller.set_injection_rate_calculator(self._compute_injection_rate)
 
     def _initialize_output_manager(self):
         """初始化输出管理器"""
@@ -416,23 +398,13 @@ class MultiphysicsGroutingSimulation:
         )
 
     # ------------------------------------------------------------------
-    # 注入率计算（可选，如果不需要可删除）
-    # ------------------------------------------------------------------
-    def _compute_injection_rate(self) -> float:
-        """
-        计算当前注入率 (L/min) - 简化两场系统可能不需要，但保留占位
-        """
-        # 在简化两场系统中，浓度场不存在，所以返回0
-        return 0.0
-
-    # ------------------------------------------------------------------
     # 运行主循环
     # ------------------------------------------------------------------
     def run(self, total_time: Optional[float] = None):
         """运行多物理场耦合模拟"""
         if self.rank == 0:
             self.logger.info("=" * 60)
-            self.logger.info("开始多物理场注浆模拟（简化两场系统）")
+            self.logger.info("开始多物理场注浆模拟（简化两场系统，独立空间）")
             self.logger.info("=" * 60)
 
         try:
@@ -477,9 +449,10 @@ class MultiphysicsGroutingSimulation:
                 success, iterations = self.solver_manager.solve(
                     dt=dt,
                     time=self.time,
-                    solution=self.solution,
-                    solution_prev=self.solution_prev,
-                    materials=self.materials
+                    u=self.u,
+                    p=self.p,
+                    u_prev=self.u_prev,
+                    p_prev=self.p_prev
                 )
 
                 if not success:
@@ -498,20 +471,19 @@ class MultiphysicsGroutingSimulation:
 
                 self.converged = True
 
-                # 在简化两场系统中，可能不需要当前压力值（如果有需要可以保留）
-                # current_pressure = self.bc_manager.get_current_pressure_value()
-                # self.time_controller.update_grouting_status(current_pressure)
-
                 derived_fields = self.materials.calculate_all_derived(self.fields, self.time)
 
                 self.output_manager.write_timestep(
                     time=self.time,
                     time_step=self.time_step,
-                    solution=self.solution,
+                    u=self.u,
+                    p=self.p,
                     derived_fields=derived_fields
                 )
 
-                self.solution_prev, self.solution = self.solution, self.solution_prev
+                # 交换当前步与上一步
+                self.u_prev, self.u = self.u, self.u_prev
+                self.p_prev, self.p = self.p, self.p_prev
 
             if self.converged:
                 if self.rank == 0:
@@ -528,12 +500,14 @@ class MultiphysicsGroutingSimulation:
                     self.logger.info(f"最终时间: {self.time:.1f}s")
                     self.logger.info("=" * 60)
 
+            # 如果最后一步未保存，再保存一次
             if self.time_step % self.config['output'].get('write_frequency', 10) != 0:
                 derived_fields = self.materials.calculate_all_derived(self.fields, self.time)
                 self.output_manager.write_timestep(
                     time=self.time,
                     time_step=self.time_step,
-                    solution=self.solution,
+                    u=self.u,
+                    p=self.p,
                     derived_fields=derived_fields
                 )
 
@@ -593,7 +567,7 @@ if __name__ == "__main__":
     default_mesh = str(script_dir / "meshes" / "foundation_drilling_2d.msh")
     default_output = str(script_dir / "results")
 
-    parser = argparse.ArgumentParser(description="多物理场注浆模拟（简化两场系统）")
+    parser = argparse.ArgumentParser(description="多物理场注浆模拟（简化两场系统，独立空间）")
     parser.add_argument("--config", type=str, default=default_config,
                         help="配置文件路径")
     parser.add_argument("--mesh", type=str, default=default_mesh,
@@ -615,7 +589,7 @@ if __name__ == "__main__":
         mesh_file=args.mesh,
         output_dir=args.output
     )
-    
+
     try:
         sim.run(total_time=args.time)
         summary = sim.get_results_summary()

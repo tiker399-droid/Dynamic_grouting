@@ -3,7 +3,7 @@
 支持位移约束、静水压力、注浆压力演化（线性/脉冲）
 坐标系约定：竖直向上为正（2D 中 y 向上，3D 中 z 向上）
 自动适应二维/三维网格
-简化两场系统 [位移(u), 压力(p)]
+简化两场系统 [位移(u), 压力(p)]，独立函数空间
 """
 
 import numpy as np
@@ -35,7 +35,8 @@ class DynamicBoundaryConditionsManager:
         facet_tags: mesh.MeshTags,
         materials,
         config: Dict[str, Any],
-        function_space: fem.FunctionSpace,
+        V_u: fem.FunctionSpace,
+        V_p: fem.FunctionSpace,
         time: float = 0.0,
         time_controller=None
     ):
@@ -47,7 +48,8 @@ class DynamicBoundaryConditionsManager:
             facet_tags: 面标记（来自 gmsh 读取）
             materials: 材料属性管理器
             config: 完整配置字典
-            function_space: 混合函数空间 [u, p]
+            V_u: 位移函数空间
+            V_p: 压力函数空间
             time: 初始时间
             time_controller: 时间控制器（可选）
         """
@@ -55,7 +57,8 @@ class DynamicBoundaryConditionsManager:
         self.facet_tags = facet_tags
         self.materials = materials
         self.config = config
-        self.W = function_space
+        self.V_u = V_u
+        self.V_p = V_p
         self.time = time
         self.comm = mesh_obj.comm
         self.rank = self.comm.Get_rank()
@@ -63,8 +66,9 @@ class DynamicBoundaryConditionsManager:
 
         self.logger = logging.getLogger(f"BCManager_rank{self.rank}")
 
-        # 边界条件存储
-        self.bcs = []          # 当前有效的狄利克雷边界条件列表
+        # 边界条件存储（分别存储）
+        self.bcs_u = []          # 位移边界条件列表
+        self.bcs_p = []          # 压力边界条件列表
 
         # 几何维度（2 或 3）
         self.gdim = mesh_obj.geometry.dim
@@ -74,9 +78,6 @@ class DynamicBoundaryConditionsManager:
 
         # 参考压力（用于无量纲化）
         self.P0 = self.materials.rho_w * self.gravity_magnitude * self.foundation_height
-
-        # 初始化子空间引用
-        self._init_subspaces()
 
         # 识别几何边界（基于标记和几何位置）
         self.boundary_geometries = {}
@@ -100,7 +101,8 @@ class DynamicBoundaryConditionsManager:
             self.logger.info(f"  识别到的边界类型: {list(self.boundary_geometries.keys())}")
             for name, info in self.boundary_geometries.items():
                 self.logger.info(f"    - {name}: {info['facets'].shape[0]} 个面")
-            self.logger.info(f"  创建的边界条件数量: {len(self.bcs)}")
+            self.logger.info(f"  创建的位移边界条件数量: {len(self.bcs_u)}")
+            self.logger.info(f"  创建的压力边界条件数量: {len(self.bcs_p)}")
             self.logger.info(f"  注浆压力模式: {self.pressure_mode.value}")
             self.logger.info(f"  最大压力: {self.pressure_max/1000:.1f} kPa")
             self.logger.info(f"  注浆持续时间: {self.grouting_duration} s")
@@ -133,17 +135,6 @@ class DynamicBoundaryConditionsManager:
         self.drill_radius = geom_config.get('drill_radius', 0.05)  # m
 
         self.water_density = water_config.get('rho_w', 1000.0)     # kg/m³
-        # 重力加速度已在上面设置
-
-    # ------------------------------------------------------------------
-    # 子空间初始化
-    # ------------------------------------------------------------------
-    def _init_subspaces(self):
-        """获取各物理场的子空间引用"""
-        self.subspaces = {
-            'displacement': self.W.sub(0),
-            'pressure': self.W.sub(1)
-        }
 
     # ------------------------------------------------------------------
     # 几何边界识别
@@ -260,26 +251,26 @@ class DynamicBoundaryConditionsManager:
     # ------------------------------------------------------------------
     def _create_initial_bcs(self):
         """创建初始边界条件（位移固定边界 + 压力边界）"""
-        self.bcs.clear()
+        self.bcs_u.clear()
+        self.bcs_p.clear()
         self._create_displacement_bcs()
         self._create_pressure_bcs()
         if self.rank == 0:
-            self.logger.info(f"初始边界条件创建完成，共 {len(self.bcs)} 个")
+            self.logger.info(f"初始边界条件创建完成，位移 {len(self.bcs_u)} 个，压力 {len(self.bcs_p)} 个")
 
     def _create_displacement_bcs(self):
         """创建位移固定边界（底面固定，侧面法向约束）"""
         fdim = self.mesh.topology.dim - 1
-        V_u = self.subspaces['displacement']
+        V_u = self.V_u
+
         # 底面固定 (marker 107)
         if 'marker_107' in self.boundary_geometries:
             facets = self.boundary_geometries['marker_107']['facets']
-            V_u_collapsed, u_to_parent = V_u.collapse()
-            zero_vec_func = fem.Function(V_u_collapsed)
-            zero_vec_func.x.array[:] = 0.0
+            zero_vec = fem.Function(V_u)
+            zero_vec.x.array[:] = 0.0
             dofs = fem.locate_dofs_topological(V_u, fdim, facets)
-            #print(f"底面位移边界: 找到 {len(dofs)} 个自由度")
-            bc = fem.dirichletbc(zero_vec_func, dofs)
-            self.bcs.append(bc)
+            bc = fem.dirichletbc(zero_vec, dofs)
+            self.bcs_u.append(bc)
 
         # 侧面法向约束 (x=0: marker_103, x=Lx: marker_104)
         side_markers = [('marker_103', 0), ('marker_104', 0)]
@@ -289,57 +280,59 @@ class DynamicBoundaryConditionsManager:
                 if facets.shape[0] > 0:
                     V_comp = V_u.sub(comp)
                     V_comp_collapsed, comp_to_parent = V_comp.collapse()
-                    zero_func = fem.Function(V_comp_collapsed)
-                    zero_func.x.array[:] = 0.0
-                    dofs = fem.locate_dofs_topological(V_comp, fdim, facets)
-                    #print(f"侧面位移边界: 找到 {len(dofs)} 个自由度")
-                    bc = fem.dirichletbc(zero_func, dofs)
-                    self.bcs.append(bc)
-
+                    zero = fem.Function(V_comp_collapsed)
+                    zero.x.array[:] = 0.0
+                    dofs = fem.locate_dofs_topological(V_u, fdim, facets)
+                    bc = fem.dirichletbc(zero, dofs)
+                    self.bcs_u.append(bc)
 
     def _create_pressure_bcs(self):
         """
         创建压力边界条件：
         - 顶部自由排水边界 (p=0)
-        - 侧面静水压力分布 p = ρ_w g (H - y) / P0 (无量纲)
-        - 注浆孔压力（当前时间值，无量纲）
+        - 侧面静水压力分布 p = ρ_w g (H - y)
+        - 注浆孔压力（当前时间值）
         """
         fdim = self.mesh.topology.dim - 1
-        V_p = self.subspaces['pressure']
+        V_p = self.V_p
 
         # 1. 顶部零压力 (marker_106)
         if 'marker_106' in self.boundary_geometries:
             facets = self.boundary_geometries['marker_106']['facets']
-            V_p_collapsed, p_to_parent = V_p.collapse()
-            zero_func = fem.Function(V_p_collapsed)
-            zero_func.x.array[:] = 0.0
+            zero = fem.Function(V_p)
+            zero.x.array[:] = 0.0
             dofs = fem.locate_dofs_topological(V_p, fdim, facets)
-            #print(f"顶部压力边界: 找到 {len(dofs)} 个自由度")
-            bc = fem.dirichletbc(zero_func, dofs)
-            self.bcs.append(bc)
+            bc = fem.dirichletbc(zero, dofs)
+            self.bcs_p.append(bc)
 
         # 2. 侧面静水压力 (左右边界 marker_103, 104)
-        V_p_collapsed, p_to_parent = V_p.collapse()
+        water_pressure_func = fem.Function(V_p)
         if self.gdim == 2:
-            water_pressure_func = fem.Function(V_p_collapsed)
+            '''
             water_pressure_func.interpolate(
-                lambda x: (self.foundation_height - x[1]) * 9.81e3   # 无量纲
+                    lambda x: (self.foundation_height - x[1]) / self.foundation_height   # 无量纲
+                )
+        else:
+            water_pressure_func.interpolate(
+                    lambda x: (self.foundation_height - x[2]) / self.foundation_height
+                )
+            '''
+            water_pressure_func.interpolate(
+                lambda x: self.materials.rho_w * self.gravity_magnitude * (self.foundation_height - x[1])
             )
         else:
-            water_pressure_func = fem.Function(V_p_collapsed)
             water_pressure_func.interpolate(
-                lambda x: (self.foundation_height - x[2]) * 9.81e3
+                lambda x: self.materials.rho_w * self.gravity_magnitude * (self.foundation_height - x[2])
             )
-
+            
         side_markers = ['marker_103', 'marker_104']
         for marker in side_markers:
             if marker in self.boundary_geometries:
                 facets = self.boundary_geometries[marker]['facets']
                 if facets.shape[0] > 0:
                     dofs = fem.locate_dofs_topological(V_p, fdim, facets)
-                    #print(f"侧面压力边界: 找到 {len(dofs)} 个自由度")
                     bc = fem.dirichletbc(water_pressure_func, dofs)
-                    self.bcs.append(bc)
+                    self.bcs_p.append(bc)
 
         # 3. 注浆孔压力
         self._update_grouting_pressure_bcs(V_p, fdim)
@@ -351,9 +344,9 @@ class DynamicBoundaryConditionsManager:
             if stage == GroutingStage.COMPLETED:
                 current_pressure = 0.0
             else:
-                current_pressure = self.pressure_func(self.time) / self.P0
+                current_pressure = self.pressure_func(self.time)
         else:
-            current_pressure = self.pressure_func(self.time) / self.P0
+            current_pressure = self.pressure_func(self.time)
 
         self.current_values['grouting_pressure'] = current_pressure
         self.current_values['is_grouting_active'] = (current_pressure > 1.0)
@@ -363,8 +356,7 @@ class DynamicBoundaryConditionsManager:
         if not grout_inlets and 'grout_inlet_fallback' in self.boundary_geometries:
             grout_inlets = ['grout_inlet_fallback']
 
-        V_p_collapsed, p_to_parent = V_p.collapse()
-        pressure_func = fem.Function(V_p_collapsed)
+        pressure_func = fem.Function(V_p)
         pressure_func.x.array[:] = current_pressure
 
         for inlet_name in grout_inlets:
@@ -372,7 +364,7 @@ class DynamicBoundaryConditionsManager:
             if facets.shape[0] > 0:
                 dofs = fem.locate_dofs_topological(V_p, fdim, facets)
                 bc = fem.dirichletbc(pressure_func, dofs)
-                self.bcs.append(bc)
+                self.bcs_p.append(bc)
 
         if self.rank == 0 and current_pressure > 0:
             self.logger.debug(f"注浆孔压力更新: {current_pressure/1000:.2f} kPa")
@@ -395,7 +387,9 @@ class DynamicBoundaryConditionsManager:
             stage = GroutingStage.AFTER_GROUTING
         self.current_values['grouting_stage'] = stage.value
 
-        self.bcs.clear()
+        # 重新创建边界条件
+        self.bcs_u.clear()
+        self.bcs_p.clear()
         self._create_displacement_bcs()
         self._create_pressure_bcs()
 
@@ -405,14 +399,18 @@ class DynamicBoundaryConditionsManager:
                 f"压力={self.current_values['grouting_pressure']/1000:.2f}kPa"
             )
 
-    def get_boundary_conditions(self) -> List:
-        """返回当前有效的狄利克雷边界条件列表"""
-        return self.bcs
+    def get_pressure_bcs(self) -> List:
+        """返回当前压力边界条件列表"""
+        return self.bcs_p
+
+    def get_displacement_bcs(self) -> List:
+        """返回当前位移边界条件列表"""
+        return self.bcs_u
 
     def get_boundary_info(self) -> Dict[str, Any]:
         """返回边界信息摘要"""
         info = {
-            'num_bcs': len(self.bcs),
+            'num_bcs': len(self.bcs_u) + len(self.bcs_p),
             'current_time': self.time,
             'grouting_stage': self.current_values['grouting_stage'],
             'grouting_pressure': self.current_values['grouting_pressure'],
@@ -423,3 +421,5 @@ class DynamicBoundaryConditionsManager:
 
     def is_grouting_active(self) -> bool:
         return self.current_values['is_grouting_active']
+
+    
