@@ -45,6 +45,7 @@ def main(config_file: str, mesh_file: str, output_dir: str):
     H = config['geometry']['height']
     g = materials.g_magnitude
     rho_w = materials.rho_w
+    rho_g = materials.rho_g
 
     # 创建函数空间
     gdim = mesh.geometry.dim
@@ -71,11 +72,24 @@ def main(config_file: str, mesh_file: str, output_dir: str):
     MARKER_LEFT   = 103   # 地基左侧（约束 x 方向）
     MARKER_RIGHT  = 104   # 地基右侧（约束 x 方向）
     MARKER_BOTTOM = 107   # 地基底面（全固定）
+    MARKER_HOLE1 = 101
+    MARKER_HOLE2 = 102
 
     # 获取所有边界标记的唯一值
     unique_markers = np.unique(facet_tags.values)
 
     # 1. 底面全固定（位移为零，约束两个方向）
+    if MARKER_HOLE2 in unique_markers:
+        facets_bottom = facet_tags.find(MARKER_HOLE2)
+        dofs_bottom = fem.locate_dofs_topological(V_u, fdim, facets_bottom)
+        # 创建零向量函数
+        zero_vector = fem.Function(V_u)
+        zero_vector.x.array[:] = 0.0
+        bc_bottom = dirichletbc(zero_vector, dofs_bottom)
+        bcs_u.append(bc_bottom)
+        if rank == 0:
+            print(f"钻孔底面边界 (102)：找到 {len(facets_bottom)} 条边，施加全固定。") 
+
     if MARKER_BOTTOM in unique_markers:
         facets_bottom = facet_tags.find(MARKER_BOTTOM)
         dofs_bottom = fem.locate_dofs_topological(V_u, fdim, facets_bottom)
@@ -106,7 +120,15 @@ def main(config_file: str, mesh_file: str, output_dir: str):
         if rank == 0:
             print(f"右侧边界 (104)：找到 {len(facets_right)} 条边，约束 x 方向。")
 
-    # 钻孔边界（101、102、106）自由，无需施加约束
+    if MARKER_HOLE1 in unique_markers:
+        facets_hole = facet_tags.find(MARKER_HOLE1)
+        dofs_hole_x = fem.locate_dofs_topological(V_u.sub(0), fdim, facets_hole)
+        bc_hole_x = dirichletbc(PETSc.ScalarType(0), dofs_hole_x, V_u.sub(0))
+        bcs_u.append(bc_hole_x)
+        if rank == 0:
+            print(f"钻孔边界 (101)：找到 {len(facets_right)} 条边，约束 x 方向。")
+
+    # 钻孔边界（106）自由，无需施加约束
     if rank == 0:
         print(f"总边界条件数：{len(bcs_u)}")
     

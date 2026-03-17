@@ -345,7 +345,7 @@ class MultiphysicsGroutingSimulation:
         g = self.materials.g_magnitude
 
         def hydrostatic_pressure(x):
-            return rho_w * g * (H - x[1])   # 有量纲
+            return rho_w * g * (H - x[1]) / (rho_w * g * H) 
 
         self.p.interpolate(hydrostatic_pressure)
         self.p_prev.interpolate(hydrostatic_pressure)
