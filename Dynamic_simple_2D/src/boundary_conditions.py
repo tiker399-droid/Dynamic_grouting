@@ -14,6 +14,8 @@ import logging
 from typing import List, Dict, Any, Optional, Callable
 from enum import Enum
 from time_stepping import GroutingStage
+from dolfinx.fem import petsc, dirichletbc
+from petsc4py import PETSc
 
 
 class PressureEvolutionMode(Enum):
@@ -78,6 +80,8 @@ class DynamicBoundaryConditionsManager:
 
         # 参考压力（用于无量纲化）
         self.P0 = self.materials.rho_w * self.gravity_magnitude * self.foundation_height
+
+        self.pressure_0 = self.materials.rho_w * self.gravity_magnitude * 9
 
         # 识别几何边界（基于标记和几何位置）
         self.boundary_geometries = {}
@@ -226,7 +230,7 @@ class DynamicBoundaryConditionsManager:
         if self.pressure_mode == PressureEvolutionMode.LINEAR_INCREASE:
             def func(t):
                 if t < self.rise_time:
-                    return self.pressure_max * (t / self.rise_time)
+                    return (self.pressure_max - self.pressure_0) * (t / self.rise_time) + self.pressure_0
                 elif t < self.grouting_duration:
                     return self.pressure_max
                 else:
@@ -272,18 +276,31 @@ class DynamicBoundaryConditionsManager:
             bc = fem.dirichletbc(zero_vec, dofs)
             self.bcs_u.append(bc)
 
+        if 'marker_102' in self.boundary_geometries:
+            facets = self.boundary_geometries['marker_107']['facets']
+            zero_vec = fem.Function(V_u)
+            zero_vec.x.array[:] = 0.0
+            dofs = fem.locate_dofs_topological(V_u, fdim, facets)
+            bc = fem.dirichletbc(zero_vec, dofs)
+            self.bcs_u.append(bc)
+    
+        unique_markers = np.unique(self.facet_tags.values)
+        MARKER_HOLE1 = 101
+        if MARKER_HOLE1 in unique_markers:
+            facets_hole = self.facet_tags.find(MARKER_HOLE1)
+            dofs_hole_x = fem.locate_dofs_topological(V_u.sub(0), fdim, facets_hole)
+            bc_hole_x = dirichletbc(PETSc.ScalarType(0), dofs_hole_x, V_u.sub(0))
+            self.bcs_u.append(bc_hole_x)
+
+            
         # 侧面法向约束 (x=0: marker_103, x=Lx: marker_104)
         side_markers = [('marker_103', 0), ('marker_104', 0)]
         for marker_name, comp in side_markers:
             if marker_name in self.boundary_geometries:
                 facets = self.boundary_geometries[marker_name]['facets']
                 if facets.shape[0] > 0:
-                    V_comp = V_u.sub(comp)
-                    V_comp_collapsed, comp_to_parent = V_comp.collapse()
-                    zero = fem.Function(V_comp_collapsed)
-                    zero.x.array[:] = 0.0
-                    dofs = fem.locate_dofs_topological(V_u, fdim, facets)
-                    bc = fem.dirichletbc(zero, dofs)
+                    dofs = fem.locate_dofs_topological(V_u.sub(0), fdim, facets)
+                    bc = fem.dirichletbc(PETSc.ScalarType(0), dofs, V_u.sub(0))
                     self.bcs_u.append(bc)
 
     def _create_pressure_bcs(self):
@@ -325,6 +342,7 @@ class DynamicBoundaryConditionsManager:
                 lambda x: self.materials.rho_w * self.gravity_magnitude * (self.foundation_height - x[2])
             )
             
+            
         side_markers = ['marker_103', 'marker_104']
         for marker in side_markers:
             if marker in self.boundary_geometries:
@@ -344,9 +362,9 @@ class DynamicBoundaryConditionsManager:
             if stage == GroutingStage.COMPLETED:
                 current_pressure = 0.0
             else:
-                current_pressure = self.pressure_func(self.time)
+                current_pressure = self.pressure_func(self.time) #/ self.P0
         else:
-            current_pressure = self.pressure_func(self.time)
+            current_pressure = self.pressure_func(self.time) #/ self.P0
 
         self.current_values['grouting_pressure'] = current_pressure
         self.current_values['is_grouting_active'] = (current_pressure > 1.0)
@@ -382,9 +400,9 @@ class DynamicBoundaryConditionsManager:
         elif time < self.rise_time:
             stage = GroutingStage.PRESSURE_RISING
         elif time < self.grouting_duration:
-            stage = GroutingStage.PRESSURE_STEADY
+            stage = GroutingStage.PRESSURE_HOLDING
         else:
-            stage = GroutingStage.AFTER_GROUTING
+            stage = GroutingStage.COMPLETED
         self.current_values['grouting_stage'] = stage.value
 
         # 重新创建边界条件

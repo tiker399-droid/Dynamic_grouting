@@ -97,6 +97,7 @@ class MaterialProperties:
         self.rho_g_constant = fem.Constant(self.mesh, scalar_dtype(self.rho_g))
         self.rho_s_constant = fem.Constant(self.mesh, scalar_dtype(self.rho_s))
         self.phi0_constant = fem.Constant(self.mesh, scalar_dtype(self.phi0))
+        self.rho_w_constant = fem.Constant(self.mesh, scalar_dtype(self.rho_w))
 
         # 当前时间和粘度缓存（用于更新时间依赖的粘度常数）
         self._current_time = 0.0
