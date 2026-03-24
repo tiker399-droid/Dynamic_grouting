@@ -57,6 +57,11 @@ class OutputManager:
 
         # 用于存储线性向量空间（供位移场插值使用）
         self._P1_vec_space = None
+        
+        # 存储初始位移场（第一步的解），用于计算位移增量
+        self._u_initial = None
+        self._u_initial_p1 = None
+        self._is_first_step = True
 
     def _initialize_files(self):
         """初始化 XDMF 输出文件"""
@@ -139,8 +144,18 @@ class OutputManager:
                 # 插值到线性空间
                 u_p1 = fem.Function(self._P1_vec_space)
                 u_p1.interpolate(u)
-                u_p1.name = "displacement"
-                self.main_file.write_function(u_p1, time)
+                
+                # 如果是第一步，保存初始位移
+                if self._is_first_step:
+                    self._u_initial_p1 = fem.Function(self._P1_vec_space)
+                    self._u_initial_p1.interpolate(u)
+                    self._is_first_step = False
+                
+                # 计算位移增量（当前位移 - 初始位移）
+                u_increment = fem.Function(self._P1_vec_space)
+                u_increment.x.array[:] = u_p1.x.array[:] - self._u_initial_p1.x.array[:]
+                u_increment.name = "displacement"
+                self.main_file.write_function(u_increment, time)
 
             # 写入压力（如果需要）
             if 'pressure' in self.fields_to_save:
