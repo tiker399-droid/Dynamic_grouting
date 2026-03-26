@@ -57,6 +57,8 @@ class MaterialProperties:
         self.nu = float(soil.get('nu', 0.3))                  # 泊松比
         self.alpha = float(soil.get('biot_coefficient', 1.0)) # Biot系数
         self.rho_s = float(soil.get('rho_s', 2020.0))         # 土颗粒密度 (kg/m³)
+        # 新增：压力存储系数 S_epsilon = 1/M，单位 1/Pa
+        self.storage_coefficient = float(soil.get('storage_coefficient', 1e-9))
 
         # 浆液参数
         grout = materials_config.get('grout', {})
@@ -98,6 +100,10 @@ class MaterialProperties:
         self.rho_s_constant = fem.Constant(self.mesh, scalar_dtype(self.rho_s))
         self.phi0_constant = fem.Constant(self.mesh, scalar_dtype(self.phi0))
         self.rho_w_constant = fem.Constant(self.mesh, scalar_dtype(self.rho_w))
+        
+        # 新增
+        self.alpha_constant = fem.Constant(self.mesh, scalar_dtype(self.alpha))
+        self.storage_coefficient_constant = fem.Constant(self.mesh, scalar_dtype(self.storage_coefficient))
 
         # 当前时间和粘度缓存（用于更新时间依赖的粘度常数）
         self._current_time = 0.0

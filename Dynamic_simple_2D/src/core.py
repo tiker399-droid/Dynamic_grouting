@@ -309,7 +309,7 @@ class MultiphysicsGroutingSimulation:
         import basix.ufl
 
         # 位移空间 (向量，二阶)
-        P2_vec = basix.ufl.element("Lagrange", cell_type, 2, shape=(gdim,))
+        P2_vec = basix.ufl.element("Lagrange", cell_type, 1, shape=(gdim,))
         self.V_u = fem.functionspace(self.mesh, P2_vec)
 
         # 压力空间 (标量，一阶)
@@ -345,7 +345,7 @@ class MultiphysicsGroutingSimulation:
         g = self.materials.g_magnitude
 
         def hydrostatic_pressure(x):
-            return rho_w * g * (H - x[1]) / (rho_w * g * H) 
+            return rho_w * g * (H - x[1])
 
         self.p.interpolate(hydrostatic_pressure)
         self.p_prev.interpolate(hydrostatic_pressure)

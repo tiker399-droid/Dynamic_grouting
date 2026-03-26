@@ -230,7 +230,7 @@ class DynamicBoundaryConditionsManager:
         if self.pressure_mode == PressureEvolutionMode.LINEAR_INCREASE:
             def func(t):
                 if t < self.rise_time:
-                    return (self.pressure_max - self.pressure_0) * (t / self.rise_time) + self.pressure_0
+                    return ((self.pressure_max - self.pressure_0) * (t / self.rise_time) + self.pressure_0)
                 elif t < self.grouting_duration:
                     return self.pressure_max
                 else:
@@ -283,7 +283,7 @@ class DynamicBoundaryConditionsManager:
             dofs = fem.locate_dofs_topological(V_u, fdim, facets)
             bc = fem.dirichletbc(zero_vec, dofs)
             self.bcs_u.append(bc)
-    
+        
         unique_markers = np.unique(self.facet_tags.values)
         MARKER_HOLE1 = 101
         if MARKER_HOLE1 in unique_markers:
@@ -291,8 +291,8 @@ class DynamicBoundaryConditionsManager:
             dofs_hole_x = fem.locate_dofs_topological(V_u.sub(0), fdim, facets_hole)
             bc_hole_x = dirichletbc(PETSc.ScalarType(0), dofs_hole_x, V_u.sub(0))
             self.bcs_u.append(bc_hole_x)
+        
 
-            
         # 侧面法向约束 (x=0: marker_103, x=Lx: marker_104)
         side_markers = [('marker_103', 0), ('marker_104', 0)]
         for marker_name, comp in side_markers:
@@ -339,7 +339,7 @@ class DynamicBoundaryConditionsManager:
             )
         else:
             water_pressure_func.interpolate(
-                lambda x: self.materials.rho_w * self.gravity_magnitude * (self.foundation_height - x[2])
+                lambda x: self.materials.rho_w * self.gravity_magnitude * (self.foundation_height - x[2]) 
             )
             
             
