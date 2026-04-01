@@ -283,7 +283,7 @@ class DynamicBoundaryConditionsManager:
             dofs = fem.locate_dofs_topological(V_u, fdim, facets)
             bc = fem.dirichletbc(zero_vec, dofs)
             self.bcs_u.append(bc)
-        
+        '''
         unique_markers = np.unique(self.facet_tags.values)
         MARKER_HOLE1 = 101
         if MARKER_HOLE1 in unique_markers:
@@ -291,7 +291,7 @@ class DynamicBoundaryConditionsManager:
             dofs_hole_x = fem.locate_dofs_topological(V_u.sub(0), fdim, facets_hole)
             bc_hole_x = dirichletbc(PETSc.ScalarType(0), dofs_hole_x, V_u.sub(0))
             self.bcs_u.append(bc_hole_x)
-        
+        '''
 
         # 侧面法向约束 (x=0: marker_103, x=Lx: marker_104)
         side_markers = [('marker_103', 0), ('marker_104', 0)]
@@ -325,15 +325,6 @@ class DynamicBoundaryConditionsManager:
         # 2. 侧面静水压力 (左右边界 marker_103, 104)
         water_pressure_func = fem.Function(V_p)
         if self.gdim == 2:
-            '''
-            water_pressure_func.interpolate(
-                    lambda x: (self.foundation_height - x[1]) / self.foundation_height   # 无量纲
-                )
-        else:
-            water_pressure_func.interpolate(
-                    lambda x: (self.foundation_height - x[2]) / self.foundation_height
-                )
-            '''
             water_pressure_func.interpolate(
                 lambda x: self.materials.rho_w * self.gravity_magnitude * (self.foundation_height - x[1])
             )

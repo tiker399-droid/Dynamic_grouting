@@ -15,7 +15,7 @@ import os
 H5_FILE = "/root/shared/Dynamic_simple_2D/results/results/main_results.h5"
 MESH_FILE = "/root/shared/Dynamic_simple_2D/meshes/foundation_drilling_2d.msh"
 OUTPUT_IMAGE = "/root/shared/Dynamic_simple_2D/results/final_settlement_curve.png"
-GROUND_HEIGHT = 13.0          # 地面高度（y 坐标）
+GROUND_HEIGHT = 8.0          # 地面高度（y 坐标）
 TOLERANCE = 0.05               # 判断地面节点的容差
 # =====================================================
 
@@ -86,6 +86,8 @@ def main():
     # 只画线条，不画数据点标记
     plt.plot(x_sorted, disp_sorted, 'b-', linewidth=2)
     # 设置纵坐标下限为 0
+    plt.ylim(bottom=0)
+    plt.ylim(top=0.017)
     plt.xlabel('x 坐标 (m)')
     plt.ylabel('竖向位移 (m)')
     plt.title('最后时刻地面抬升曲线')

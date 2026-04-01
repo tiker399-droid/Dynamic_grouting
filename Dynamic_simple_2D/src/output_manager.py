@@ -153,7 +153,7 @@ class OutputManager:
                 
                 # 计算位移增量（当前位移 - 初始位移）
                 u_increment = fem.Function(self._P1_vec_space)
-                u_increment.x.array[:] = u_p1.x.array[:] - self._u_initial_p1.x.array[:]
+                u_increment.x.array[:] = u_p1.x.array[:] #- self._u_initial_p1.x.array[:]
                 u_increment.name = "displacement"
                 self.main_file.write_function(u_increment, time)
 

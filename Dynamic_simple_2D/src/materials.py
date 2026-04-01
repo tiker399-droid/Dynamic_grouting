@@ -155,6 +155,14 @@ class MaterialProperties:
         mu = self.mu_current_constant  # 使用当前粘度常数
         rho = self.rho_g_constant
         return - (k / mu) * (ufl.grad(p) - rho * self.g)
+    
+    # 在 MaterialProperties 类中添加
+    def get_drained_bulk_modulus(self):
+        """计算排水体积模量 K_dr = E / (3 * (1 - 2 * nu))"""
+        return self.E / (3.0 * (1.0 - 2.0 * self.nu))
+
+    # 确保存储系数 S (storage_coefficient) 有合理的物理值
+    # 如果不确定，砂土/粘土通常在 1e-10 到 1e-8 之间
 
     # ---------- 弹性参数 ----------
     def get_lame_parameters(self):
