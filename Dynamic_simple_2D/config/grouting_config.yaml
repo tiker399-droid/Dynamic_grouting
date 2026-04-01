@@ -2,7 +2,7 @@
 # 坐标系：竖直向上为正，重力加速度 9.81 m/s² 方向向下
 
 simulation:
-  total_time: 600.0              # 总模拟时间 (秒
+  total_time: 120.0              # 总模拟时间 (秒
   dt_initial: 0.1                 # 初始时间步长 (秒)
   dt_min: 0.01                    # 最小时间步长 (秒)
   dt_max: 1.0                  # 最大时间步长 (秒)
@@ -18,14 +18,14 @@ materials:
     E: 20e6                        # 杨氏模量 (Pa)
     nu: 0.3                         # 泊松比
     phi0: 0.4                       # 初始孔隙度
-    k0: 1e-12                       # 初始渗透率 (m²)
+    k0: 1e-11                       # 初始渗透率 (m²)
     biot_coefficient: 1.0            # Biot 系数
     storage_coefficient: 8e-6      # 压力存储系数 S_epsilon = 1/M，单位 /Pa
     rho_s: 2700.0                    # 土颗粒密度 (kg/m³)
   grout:
     rho_g: 1800.0                    # 浆液密度 (kg/m³)
     mu_g0: 1e-2                      # 浆液初始粘度 (Pa·s)
-    xi: 1.56                         # 粘度增长常数 (1/min)
+    xi: 0.56                         # 粘度增长常数 (1/min)
     filtration_coeff: 0.75           # 过滤系数
     pressure: 420e3                  # 最大注浆压力 (Pa)
     duration: 7200.0                 # 注浆持续时间 (秒)
@@ -44,7 +44,7 @@ solver:
   type: "newton"                      # 求解器类型
   max_iterations: 5                   # 非线性最大迭代次数
   relative_tolerance: 1e-12            # 相对容差
-  absolute_tolerance: 1e-4            # 绝对容差
+  absolute_tolerance: 1e-10            # 绝对容差
   linear_solver: "mumps"               # 线性求解器 ("mumps", "gmres", "cg")
   preconditioner: "lu"               # 预条件子（当 linear_solver 为 "gmres" 时使用）
   report_convergence: true             # 是否输出详细收敛信息

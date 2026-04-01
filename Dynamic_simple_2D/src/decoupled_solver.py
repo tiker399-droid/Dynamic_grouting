@@ -204,40 +204,28 @@ class DecoupledSolver:
         mu = self.mu_const
         alpha = self.alpha_const
         S = self.storage_const
-        
-        # 稳定化系数
-        K_dr = self.mat.get_drained_bulk_modulus()
-        L_stab = (alpha**2) / K_dr 
-        
-        dt_const = fem.Constant(self.mesh, PETSc.ScalarType(dt))
-        rho_f = self.rho_g_const  # 浆液密度
 
-        # --- 左侧项 (LHS) ---
-        # 包含 Fixed-Stress 稳定项和 达西扩散项
+        dt_const = fem.Constant(self.mesh, PETSc.ScalarType(dt))
+
+        # 使用“净位移历史”计算骨架体积应变率
+        eps_v_rate = (ufl.div(self.u_hist_1) - ufl.div(self.u_hist_2)) / dt_const
+
         a_expr = (
-            (S + L_stab) * p_trial * v_p * ufl.dx
-            + dt_const * (k / mu) * ufl.inner(ufl.grad(p_trial), ufl.grad(v_p)) * ufl.dx
+            #(S / dt_const) * p_trial * v_p * ufl.dx
+            + ufl.inner((k / mu) * ufl.grad(p_trial), ufl.grad(v_p)) * ufl.dx
         )
 
-        # --- 右侧项 (RHS) ---
-        # 1. 历史压力与稳定项
-        # 2. 耦合项：使用净位移的散度变化率。注意：这是注浆挤压土体的反作用力，应为负号
-        # 3. 达西重力项：这是维持静水压力的关键！
-        div_u_n = ufl.div(self.u_hist_1)     # 当前时刻位移散度
-        div_u_nm1 = ufl.div(self.u_hist_2)   # 上一时刻位移散度
-        
         L_expr = (
-            (S + L_stab) * p_prev_func * v_p * ufl.dx
-            - alpha * (div_u_n - div_u_nm1) * v_p * ufl.dx
-            + dt_const * (k / mu) * rho_f * ufl.dot(self.g, ufl.grad(v_p)) * ufl.dx
+            #(S / dt_const) * p_prev_func * v_p * ufl.dx
+            - fem.Constant(self.mesh, 1e-4) * eps_v_rate * v_p * ufl.dx
         )
 
         a = fem.form(a_expr)
         L = fem.form(L_expr)
 
-        # 组装与求解 (建议使用 mumps 以确保病态矩阵下的数值稳定性)
         A = petsc.assemble_matrix(a, bcs=bcs_p)
         A.assemble()
+
         b = petsc.assemble_vector(L)
         petsc.apply_lifting(b, [a], [bcs_p])
         b.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
@@ -246,32 +234,47 @@ class DecoupledSolver:
         ksp = PETSc.KSP().create(self.comm)
         ksp.setOperators(A)
         ksp.setType("preonly")
-        ksp.getPC().setType("lu")
-        ksp.getPC().setFactorSolverType("mumps")
+        pc = ksp.getPC()
+        pc.setType("lu")
+        pc.setFactorSolverType("mumps")
+        ksp.setTolerances(rtol=self.ksp_rtol, atol=self.ksp_atol, max_it=self.ksp_max_it)
+
         ksp.solve(b, p_func.x.petsc_vec)
         p_func.x.scatter_forward()
-        # ... 清理 ksp ...
+
+        p_array = p_func.x.array
+        eps_rate_norm = self._global_l2_norm(eps_v_rate)
+
+        if self.rank == 0:
+            reason = ksp.getConvergedReason()
+            print(
+                f"[Pressure] t={time:.3f}, dt={dt:.3e}, "
+                f"min(p)={p_array.min():.6e}, max(p)={p_array.max():.6e}, "
+                f"||eps_v_dot||_L2={eps_rate_norm:.6e}, "
+                f"KSP reason={reason}"
+            )
 
         ksp.destroy()
         A.destroy()
         b.destroy()
 
     def _solve_displacement(self, u_func, p_func, time):
+        """
+        先求总位移 u_total，再减去初始场 u_initial，得到净位移 u_func。
+        对外部而言，u_func 始终表示“相对初始平衡态的附加位移”。
+        """
         bcs_u = self.bc_manager.get_displacement_bcs()
         v_u = ufl.TestFunction(self.V_u)
         u_trial = ufl.TrialFunction(self.V_u)
 
-        # 混合介质密度
-        rho_bulk = (1.0 - self.phi0_const) * self.rho_s_const + self.phi0_const * self.rho_g_const
+        rho_bulk = (1.0 - self.phi0_const) * self.rho_s_const + self.phi0_const * self.rho_w_const
 
-        # 弱形式：内力 - 压力梯度项 = 重力项
-        # 注意：alpha * p * div(v) 是 Biot 耦合的标准形式
         a = fem.form(ufl.inner(self._sigma(u_trial), ufl.sym(ufl.grad(v_u))) * ufl.dx)
         L = fem.form(
-            self.alpha_const * p_func * ufl.div(v_u) * ufl.dx # 耦合项
-            + ufl.dot(rho_bulk * self.g, v_u) * ufl.dx       # 重力项
+            self.alpha_const * p_func * ufl.div(v_u) * ufl.dx
+            + ufl.dot(rho_bulk * self.g, v_u) * ufl.dx
         )
-        # ... 后续组装与求解 ...
+
         A = petsc.assemble_matrix(a, bcs=bcs_u)
         A.assemble()
 
