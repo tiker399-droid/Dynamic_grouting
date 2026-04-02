@@ -322,7 +322,7 @@ if __name__ == "__main__":
     viz = ResultVisualizer(results_dir)
  
     # 可选：打印时间步-路径对照表，验证时间步是否正确
-    viz.print_time_table('pressure')
+    #viz.print_time_table('pressure')
  
     # 绘制指定时刻的压力曲线（单个时刻或列表均可）
     viz.plot_pressure_at_y(

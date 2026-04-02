@@ -54,13 +54,10 @@ class DecoupledSolver:
         self.alpha_const = self.mat.alpha_constant
         self.storage_const = self.mat.storage_coefficient_constant
 
-        # 不再使用经验缩放
-        self.scale_p = 1.0
-        self.scale_u = 1.0
-        self.scale_up = 1.0
-        self.scale_vs = 1.0
-
         # 求解器选项
+        self.coupling_max_iter = config.get('solver', {}).get('coupling_max_iterations', 20)
+        self.coupling_tol = config.get('solver', {}).get('coupling_tolerance', 1e-6)
+
         self.pressure_ksp_type = config.get('pressure_ksp_type', 'preonly')
         self.pressure_pc_type = config.get('pressure_pc_type', 'lu')
         self.displacement_ksp_type = config.get('displacement_ksp_type', 'gmres')
@@ -90,7 +87,7 @@ class DecoupledSolver:
     def solve(self, dt, time, u, p, u_prev, p_prev):
         self.mat.update_time_dependent_properties(time)
 
-        # 初始化净位移历史
+        # 初始化净位移历史（第一次调用时）
         if not self._u_history_initialized:
             self.u_hist_1.x.array[:] = u_prev.x.array[:]
             self.u_hist_2.x.array[:] = u_prev.x.array[:]
@@ -98,17 +95,59 @@ class DecoupledSolver:
             self.u_hist_2.x.scatter_forward()
             self._u_history_initialized = True
 
-        # 先解压力，再解位移
-        self._solve_pressure(p, p_prev, dt, time)
-        self._solve_displacement(u, p, time)
+        # 初始化当前步的字段（用于迭代）
+        u_k = u       # 直接使用传入的 u，避免额外分配
+        p_k = p
 
-        # 更新净位移历史
+        # 保存迭代前的值，用于收敛判断
+        u_old = fem.Function(self.V_u)
+        p_old = fem.Function(self.V_p)
+        u_old.x.array[:] = u_k.x.array[:]
+        p_old.x.array[:] = p_k.x.array[:]
+
+        converged = False
+        for iter_count in range(1, self.coupling_max_iter + 1):
+            # 1. 求解压力方程，使用当前位移 u_k 计算 eps_v_rate
+            self._solve_pressure(p_k, p_prev, dt, time, u_k)
+
+            # 2. 求解位移方程，使用当前压力 p_k
+            self._solve_displacement(u_k, p_k, time)
+
+            # 3. 检查收敛性（比较前后两次迭代的变化）
+            # 计算位移的相对变化（L2 范数）
+            delta_u = u_k.x.array - u_old.x.array
+            norm_delta_u = np.linalg.norm(delta_u)
+            norm_u = np.linalg.norm(u_k.x.array)
+            rel_change_u = norm_delta_u / (norm_u + 1e-12)
+
+            # 计算压力的相对变化
+            delta_p = p_k.x.array - p_old.x.array
+            norm_delta_p = np.linalg.norm(delta_p)
+            norm_p = np.linalg.norm(p_k.x.array)
+            rel_change_p = norm_delta_p / (norm_p + 1e-12)
+
+            # 如果变化小于容差，则收敛
+            if rel_change_u < self.coupling_tol and rel_change_p < self.coupling_tol:
+                converged = True
+                if self.rank == 0:
+                    self.logger.info(f"耦合迭代收敛，迭代次数: {iter_count}, "
+                                    f"Δu={rel_change_u:.2e}, Δp={rel_change_p:.2e}")
+                break
+
+            # 否则，更新旧值，继续迭代
+            u_old.x.array[:] = u_k.x.array[:]
+            p_old.x.array[:] = p_k.x.array[:]
+
+        if not converged and self.rank == 0:
+            self.logger.warning(f"耦合迭代未收敛，达到最大迭代次数 {self.coupling_max_iter}")
+
+        # 更新净位移历史（使用最终收敛的位移）
         self.u_hist_2.x.array[:] = self.u_hist_1.x.array[:]
-        self.u_hist_1.x.array[:] = u.x.array[:]
+        self.u_hist_1.x.array[:] = u_k.x.array[:]
         self.u_hist_2.x.scatter_forward()
         self.u_hist_1.x.scatter_forward()
 
-        return True, 0
+        return converged, iter_count
 
     def _global_l2_norm(self, expr):
         local_val = fem.assemble_scalar(fem.form(ufl.inner(expr, expr) * ufl.dx))
@@ -195,7 +234,7 @@ class DecoupledSolver:
             if self.rank == 0:
                 self.logger.warning(f"初始平衡位移计算失败，将不做初始场消去: {e}")
 
-    def _solve_pressure(self, p_func, p_prev_func, dt, time):
+    def _solve_pressure(self, p_func, p_prev_func, dt, time, u_cur):
         bcs_p = self.bc_manager.get_pressure_bcs()
         v_p = ufl.TestFunction(self.V_p)
         p_trial = ufl.TrialFunction(self.V_p)
@@ -207,17 +246,18 @@ class DecoupledSolver:
 
         dt_const = fem.Constant(self.mesh, PETSc.ScalarType(dt))
 
-        # 使用“净位移历史”计算骨架体积应变率
-        eps_v_rate = (ufl.div(self.u_hist_1) - ufl.div(self.u_hist_2)) / dt_const
+        # 使用当前位移 u_cur 和上一时间步位移 u_hist_2 计算体积应变率
+        eps_v_rate = (ufl.div(u_cur) - ufl.div(self.u_hist_2)) / dt_const
 
         a_expr = (
-            #(S / dt_const) * p_trial * v_p * ufl.dx
+             #(S / dt_const) * p_trial * v_p * ufl.dx   # 如果需要存储项，可取消注释
             + ufl.inner((k / mu) * ufl.grad(p_trial), ufl.grad(v_p)) * ufl.dx
         )
 
         L_expr = (
-            #(S / dt_const) * p_prev_func * v_p * ufl.dx
-            - fem.Constant(self.mesh, 1e-4) * eps_v_rate * v_p * ufl.dx
+             #(S / dt_const) * p_prev_func * v_p * ufl.dx
+            + ufl.inner((k / mu) * self.rho_g_const * self.g_const, ufl.grad(v_p)) * ufl.dx
+            - 1e-4 * alpha * eps_v_rate * v_p * ufl.dx
         )
 
         a = fem.form(a_expr)
@@ -242,17 +282,11 @@ class DecoupledSolver:
         ksp.solve(b, p_func.x.petsc_vec)
         p_func.x.scatter_forward()
 
-        p_array = p_func.x.array
-        eps_rate_norm = self._global_l2_norm(eps_v_rate)
-
         if self.rank == 0:
             reason = ksp.getConvergedReason()
-            print(
-                f"[Pressure] t={time:.3f}, dt={dt:.3e}, "
-                f"min(p)={p_array.min():.6e}, max(p)={p_array.max():.6e}, "
-                f"||eps_v_dot||_L2={eps_rate_norm:.6e}, "
-                f"KSP reason={reason}"
-            )
+            self.logger.debug(f"[Pressure] t={time:.3f}, dt={dt:.3e}, "
+                            f"min(p)={p_func.x.array.min():.6e}, "
+                            f"max(p)={p_func.x.array.max():.6e}, KSP={reason}")
 
         ksp.destroy()
         A.destroy()
