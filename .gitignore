@@ -1,0 +1,13 @@
+cat > .gitignore << 'EOF'
+# 忽略仿真结果目录
+Dynamic_simple_2D/results/
+
+# 忽略所有 h5/xdmf/log 文件
+*.h5
+*.xdmf
+*.log
+
+# 可选：忽略 Python 缓存等
+__pycache__/
+*.pyc
+EOF
