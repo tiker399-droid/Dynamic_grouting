@@ -11,11 +11,11 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 from collections import defaultdict
  
-try:
-    plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
-    plt.rcParams['axes.unicode_minus'] = False
-except Exception:
-    pass
+# try:
+#     plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
+#     plt.rcParams['axes.unicode_minus'] = False
+# except Exception:
+#     pass
  
 # ==================== 用户修改区域 ====================
 XDMF_FILE     = "/root/shared/Dynamic_simple_2D/results/results/main_results.xdmf"
@@ -167,10 +167,12 @@ def main():
  
     # ── 绘图 ──
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(times, max_uplift * 1e3, 'b-', linewidth=2, label='地面最大竖向抬升')
-    ax.set_xlabel('时间 (s)', fontsize=14)
-    ax.set_ylabel('竖向位移 (mm)', fontsize=14)
-    ax.set_title('地面最大抬升时程曲线', fontsize=16)
+    ax.plot(times, max_uplift * 1e3, 'b-', linewidth=2, label='Maximum ground uplift')
+    # 在 x=60 处画一条竖直直线
+    plt.axvline(x=60, color='red', linestyle='--', linewidth=2, label='t = 60s, reach the target pressure')
+    ax.set_xlabel('Time (s)', fontsize=14)
+    ax.set_ylabel('Vertical displacement (mm)', fontsize=14)
+    ax.set_title('Maximum ground uplift vs time', fontsize=16)
     ax.grid(True, linestyle='--', alpha=0.6)
     ax.legend(fontsize=12)
     ax.tick_params(labelsize=12)

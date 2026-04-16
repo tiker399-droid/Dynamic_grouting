@@ -31,7 +31,7 @@ class MultiphysicsGroutingSimulation:
     """
 
     def __init__(self, config_file: str = "config/grouting_config.yaml",
-                 mesh_file: str = "meshes/foundation_drilling_2d.msh",
+                 mesh_file: str = "meshes/foundation_axisymmetric.msh",
                  output_dir: str = "results"):
         """
         初始化模拟器
@@ -564,7 +564,7 @@ if __name__ == "__main__":
 
     script_dir = pathlib.Path(__file__).resolve().parent.parent
     default_config = str(script_dir / "config" / "grouting_config.yaml")
-    default_mesh = str(script_dir / "meshes" / "foundation_drilling_2d.msh")
+    default_mesh = str(script_dir / "meshes" / "foundation_axisymmetric.msh")
     default_output = str(script_dir / "results")
 
     parser = argparse.ArgumentParser(description="多物理场注浆模拟（简化两场系统，独立空间）")

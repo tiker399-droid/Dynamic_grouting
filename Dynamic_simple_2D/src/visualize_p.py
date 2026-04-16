@@ -16,11 +16,11 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 from collections import defaultdict
  
-try:
-    plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
-    plt.rcParams['axes.unicode_minus'] = False
-except Exception:
-    pass
+# try:
+#     plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
+#     plt.rcParams['axes.unicode_minus'] = False
+# except Exception:
+#     pass
  
  
 # ─────────────────────────── XDMF 解析工具 ─────────────────────────── #
@@ -262,7 +262,7 @@ class ResultVisualizer:
             p_line = self._read_field_step('pressure', i)[node_indices] * scale
  
             # 凿孔段压力置零（x ∈ [1.95, 2.05]）
-            p_line[(x_line > 1.95) & (x_line < 2.05)] = 0.0
+            #p_line[(x_line > 1.95) & (x_line < 2.05)] = 0.0
  
             ax.plot(x_line, p_line,
                     linestyle='-', linewidth=1.8,
@@ -326,7 +326,7 @@ if __name__ == "__main__":
  
     # 绘制指定时刻的压力曲线（单个时刻或列表均可）
     viz.plot_pressure_at_y(
-        times_to_plot=[30, 60, 90, 120, 1200],   # 修改为你需要的时刻 (s)
+        times_to_plot=[30, 60, 120, 180],   # 修改为你需要的时刻 (s)
         y_target=3.8,
         unit='kPa',
         save=True,

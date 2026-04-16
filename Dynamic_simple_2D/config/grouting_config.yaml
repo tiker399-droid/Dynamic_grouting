@@ -2,7 +2,7 @@
 # 坐标系：竖直向上为正，重力加速度 9.81 m/s² 方向向下
  
 simulation:
-  total_time: 1.0
+  total_time: 180.0
   dt_initial: 0.1
   dt_min: 0.01
   dt_max: 1.0
@@ -15,13 +15,13 @@ simulation:
  
 materials:
   soil:
-    E: 20e6                        # 杨氏模量 (Pa)
+    E: 50e6                        # 杨氏模量 (Pa)
     nu: 0.3                        # 泊松比
     phi0: 0.4                      # 初始孔隙度
-    k0: 1e-12                      # 初始渗透率 (m²)
+    k0: 1e-10                      # 初始渗透率 (m²)
     biot_coefficient: 1.0          # Biot 系数 α
     rho_s: 2700.0                  # 土颗粒密度 (kg/m³)
- 
+  
     # -----------------------------------------------------------------------
     # 【修正】存储系数 S = 1/M（Biot 模量倒数）
     #
@@ -38,8 +38,7 @@ materials:
     rho_g: 1800.0                  # 浆液密度 (kg/m³)
     mu_g0: 1e-2                    # 浆液初始粘度 (Pa·s)
     xi: 1.56                       # 粘度增长常数 (1/min)
-    filtration_coeff: 0.75
-    pressure: 420e3                # 最大注浆压力 (Pa)
+    pressure: 510e3                # 最大注浆压力 (Pa)
     duration: 7200.0               # 注浆持续时间 (秒)
     rise_time: 60.0               # 压力上升时间 (秒)
     pressure_mode: "linear_increase"
@@ -74,7 +73,7 @@ solver:
   #   fss_inner_iterations: 1   - 最快，仅单次 FSS 近似（适合快速测试）
   #   fss_inner_iterations: 5   - 保守，超高精度（通常无必要）
   # -----------------------------------------------------------------------
-  fss_inner_iterations: 3
+  fss_inner_iterations: 5
  
 output:
   format: "xdmf"

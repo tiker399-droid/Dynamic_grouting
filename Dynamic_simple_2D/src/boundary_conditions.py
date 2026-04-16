@@ -183,11 +183,11 @@ class DynamicBoundaryConditionsManager:
     def _identify_grout_inlets(self, drill_facets, facet_geom, facet_to_vertex, identified):
         """从钻孔壁面中识别注浆孔位置（根据深度分层）"""
         grout_depths = [
+            self.foundation_height - self.drill_depth + 2.0,
             self.foundation_height - self.drill_depth + 1.6,
             self.foundation_height - self.drill_depth + 1.2,
             self.foundation_height - self.drill_depth + 0.8,
-            self.foundation_height - self.drill_depth + 0.4,
-            self.foundation_height - self.drill_depth
+            self.foundation_height - self.drill_depth + 0.4
         ]
 
         for i, target_z in enumerate(grout_depths):
@@ -275,22 +275,14 @@ class DynamicBoundaryConditionsManager:
             dofs = fem.locate_dofs_topological(V_u, fdim, facets)
             bc = fem.dirichletbc(zero_vec, dofs)
             self.bcs_u.append(bc)
-
+        '''
         if 'marker_102' in self.boundary_geometries:
-            facets = self.boundary_geometries['marker_107']['facets']
+            facets = self.boundary_geometries['marker_102']['facets']
             zero_vec = fem.Function(V_u)
             zero_vec.x.array[:] = 0.0
             dofs = fem.locate_dofs_topological(V_u, fdim, facets)
             bc = fem.dirichletbc(zero_vec, dofs)
             self.bcs_u.append(bc)
-        '''
-        unique_markers = np.unique(self.facet_tags.values)
-        MARKER_HOLE1 = 101
-        if MARKER_HOLE1 in unique_markers:
-            facets_hole = self.facet_tags.find(MARKER_HOLE1)
-            dofs_hole_x = fem.locate_dofs_topological(V_u.sub(0), fdim, facets_hole)
-            bc_hole_x = dirichletbc(PETSc.ScalarType(0), dofs_hole_x, V_u.sub(0))
-            self.bcs_u.append(bc_hole_x)
         '''
 
         # 侧面法向约束 (x=0: marker_103, x=Lx: marker_104)
@@ -322,7 +314,7 @@ class DynamicBoundaryConditionsManager:
             bc = fem.dirichletbc(zero, dofs)
             self.bcs_p.append(bc)
 
-        # 2. 侧面静水压力 (左右边界 marker_103, 104)
+        # 2. 侧面静水压力 (左右边界 marker_104)
         water_pressure_func = fem.Function(V_p)
         if self.gdim == 2:
             water_pressure_func.interpolate(
@@ -334,7 +326,7 @@ class DynamicBoundaryConditionsManager:
             )
             
             
-        side_markers = ['marker_103', 'marker_104']
+        side_markers = ['marker_104']
         for marker in side_markers:
             if marker in self.boundary_geometries:
                 facets = self.boundary_geometries[marker]['facets']
@@ -353,9 +345,9 @@ class DynamicBoundaryConditionsManager:
             if stage == GroutingStage.COMPLETED:
                 current_pressure = 0.0
             else:
-                current_pressure = self.pressure_func(self.time) #/ self.P0
+                current_pressure = self.pressure_func(self.time)
         else:
-            current_pressure = self.pressure_func(self.time) #/ self.P0
+            current_pressure = self.pressure_func(self.time)
 
         self.current_values['grouting_pressure'] = current_pressure
         self.current_values['is_grouting_active'] = (current_pressure > 1.0)
